@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mock Clinical EMR</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Mock Clinical EMR</h1>
+      <p>Select a patient to view their chart and clinical context.</p>
+    </header>
+    <main>
+      <aside class="patient-roster">
+        <h2>Patient Roster</h2>
+        <ul id="patient-list" aria-label="Patient list"></ul>
+      </aside>
+      <section class="patient-chart" aria-live="polite">
+        <div id="patient-overview" class="panel">
+          <h2>Patient Overview</h2>
+          <p>Select a patient to view clinical details.</p>
+        </div>
+        <div id="ips-sections" class="ips-grid hidden"></div>
+        <div id="encounter-notes" class="panel hidden">
+          <h2>Encounter Notes</h2>
+          <div id="notes-container"></div>
+        </div>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

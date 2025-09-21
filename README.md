@@ -50,9 +50,31 @@ extension/
 ├── popup.css          # Styling for the popup UI
 ├── popup.html         # Popup markup
 └── popup.js           # Popup logic for displaying AI insights
+
+mock-emr/
+├── app.js             # Patient data model and lightweight UI logic
+├── index.html         # Single-page mock EMR shell
+└── styles.css         # Layout and visual design for the mock EMR
 ```
 
 Documentation for broader product goals remains in [`docs/requirements.md`](docs/requirements.md).
+
+### Using the mock EMR sandbox
+
+The `mock-emr/` directory provides a static, single-page web application that mimics a simplified electronic medical record. It includes a roster of 10 fictional patients, full International Patient Summary sections, and reverse-chronological SOAP encounter notes so you can exercise the extension's context detection.
+
+To launch it locally:
+
+1. From the repository root, start a static web server (any tool works). For example:
+   ```bash
+   npx serve mock-emr
+   ```
+   or
+   ```bash
+   python3 -m http.server --directory mock-emr 8000
+   ```
+2. Open the served URL (e.g., `http://localhost:8000/`) in your browser.
+3. Load the extension in the same browser profile and interact with the mock EMR to observe detected patient context and generated insights.
 
 ## Development Notes
 
