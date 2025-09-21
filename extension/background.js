@@ -3,32 +3,146 @@ const DEFAULT_MODEL = 'gpt-4o-mini';
 const MAX_DOM_CHARS = 4000;
 
 const tabState = new Map();
+let tabStateReady = loadTabStateFromStorage();
+
+function storageGet(keys) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.local.get(keys, (items) => {
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          reject(new Error(runtimeError.message));
+          return;
+        }
+        resolve(items);
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function storageSet(items) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.local.set(items, () => {
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          reject(new Error(runtimeError.message));
+          return;
+        }
+        resolve();
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+async function loadTabStateFromStorage() {
+  try {
+    const { tabState: stored = {} } = await storageGet({ tabState: {} });
+    Object.entries(stored).forEach(([storedTabId, state]) => {
+      const numericTabId = Number(storedTabId);
+      if (!Number.isNaN(numericTabId) && state) {
+        tabState.set(numericTabId, state);
+      }
+    });
+  } catch (error) {
+    console.error('[CCA][background] Failed to load persisted tab state', error);
+  }
+}
+
+function serializeTabState() {
+  const serialized = {};
+  tabState.forEach((value, key) => {
+    serialized[key] = value;
+  });
+  return serialized;
+}
+
+async function persistTabState() {
+  try {
+    await storageSet({ tabState: serializeTabState() });
+  } catch (error) {
+    console.error('[CCA][background] Failed to persist tab state', error);
+  }
+}
+
+async function setTabStateEntry(tabId, state) {
+  await tabStateReady;
+  tabState.set(tabId, state);
+  await persistTabState();
+}
+
+async function deleteTabStateEntry(tabId) {
+  await tabStateReady;
+  if (tabState.delete(tabId)) {
+    await persistTabState();
+  }
+}
+
+async function getTabStateEntry(tabId) {
+  await tabStateReady;
+  return tabState.get(tabId);
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === 'PAGE_CONTEXT' && sender.tab?.id) {
-    handlePageContext(sender.tab.id, message.payload).catch((error) => {
-      console.error('Failed to process page context', error);
-      tabState.set(sender.tab.id, {
+  const tabId = sender.tab?.id;
+  console.log('[CCA][background] message received', { type: message?.type, tabId });
+
+  if (message?.type === 'PAGE_CONTEXT' && tabId) {
+    handlePageContext(tabId, message.payload).catch(async (error) => {
+      console.error('[CCA][background] Failed to process page context', error);
+      await setTabStateEntry(tabId, {
         status: 'error',
         error: error.message,
         updatedAt: Date.now(),
       });
-      notifyPopupUpdate(sender.tab.id);
+      notifyPopupUpdate(tabId);
     });
-  } else if (message?.type === 'POPUP_REQUEST' && sender.tab?.id) {
-    sendResponse(tabState.get(sender.tab.id) || { status: 'idle' });
+    return; // no async sendResponse
   }
-  return true;
+
+  if (message?.type === 'POPUP_REQUEST') {
+    (async () => {
+      await tabStateReady;
+      const targetTabId = tabId || message.tabId;
+      if (!targetTabId) {
+        console.warn('[CCA][background] POPUP_REQUEST missing tabId');
+        sendResponse({ status: 'error', error: 'Unable to determine active tab.' });
+        return;
+      }
+
+      const response = (await getTabStateEntry(targetTabId)) || { status: 'idle' };
+      console.log('[CCA][background] responding to POPUP_REQUEST', { tabId: targetTabId, status: response.status });
+      sendResponse(response);
+    })().catch((error) => {
+      console.error('[CCA][background] Failed to respond to POPUP_REQUEST', error);
+      sendResponse({ status: 'error', error: error.message });
+    });
+    return true; // async sendResponse
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  tabState.delete(tabId);
+  deleteTabStateEntry(tabId).catch((error) => {
+    console.error('[CCA][background] Failed to clear tab state on removal', { tabId, error: error.message });
+  });
 });
 
 async function handlePageContext(tabId, payload) {
+  console.log('[CCA][background] handlePageContext', { tabId, reason: payload?.reason });
+  await setTabStateEntry(tabId, {
+    status: 'loading',
+    updatedAt: Date.now(),
+  });
+  notifyPopupUpdate(tabId);
+
   const config = await loadConfig(payload.url);
   if (!config.apiKey) {
-    tabState.set(tabId, {
+    console.warn('[CCA][background] missing API key');
+    await setTabStateEntry(tabId, {
       status: 'needs_api_key',
       message: 'Set an OpenAI API key in the extension options.',
       updatedAt: Date.now(),
@@ -38,8 +152,7 @@ async function handlePageContext(tabId, payload) {
   }
 
   const prompt = buildPrompt(config.prompt, payload);
-  tabState.set(tabId, { status: 'loading', updatedAt: Date.now() });
-  notifyPopupUpdate(tabId);
+  console.log('[CCA][background] querying OpenAI', { tabId, model: config.model });
 
   const openAIResponse = await queryOpenAI({
     apiKey: config.apiKey,
@@ -47,21 +160,24 @@ async function handlePageContext(tabId, payload) {
     prompt,
   });
 
-  tabState.set(tabId, {
+  await setTabStateEntry(tabId, {
     status: 'success',
     result: openAIResponse,
     updatedAt: Date.now(),
     contextSummary: payload.contextSummary,
   });
+  console.log('[CCA][background] OpenAI response stored', { tabId });
   notifyPopupUpdate(tabId);
 }
 
 function notifyPopupUpdate(tabId) {
+  console.log('[CCA][background] notifying popup', { tabId });
   chrome.runtime.sendMessage({ type: 'CONTEXT_UPDATED', tabId });
 }
 
 async function loadConfig(url) {
-  const { openAI = {} } = await chrome.storage.local.get({ openAI: {} });
+  console.log('[CCA][background] loading config', { url });
+  const { openAI = {} } = await storageGet({ openAI: {} });
   const hostname = extractHostname(url);
   const siteConfig = (openAI.sites && openAI.sites[hostname]) || {};
 
@@ -77,7 +193,7 @@ function extractHostname(url) {
     const parsed = new URL(url);
     return parsed.hostname;
   } catch (error) {
-    console.warn('Unable to parse URL for hostname', url, error);
+    console.warn('[CCA][background] Unable to parse URL for hostname', url, error);
     return 'unknown';
   }
 }

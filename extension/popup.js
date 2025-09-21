@@ -10,13 +10,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.runtime.openOptionsPage();
   });
 
+  function queryTabs(queryInfo) {
+    return new Promise((resolve, reject) => {
+      chrome.tabs.query(queryInfo, (tabs) => {
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          reject(new Error(runtimeError.message));
+          return;
+        }
+        resolve(tabs);
+      });
+    });
+  }
+
   async function refresh() {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    let tabs;
+    try {
+      tabs = await queryTabs({ active: true, currentWindow: true });
+    } catch (error) {
+      updateUI({ status: 'error', error: error.message });
+      return;
+    }
+
+    const [tab] = tabs || [];
     if (!tab) {
       updateUI({ status: 'error', error: 'No active tab detected.' });
       return;
     }
-    chrome.runtime.sendMessage({ type: 'POPUP_REQUEST' }, (response) => {
+    chrome.runtime.sendMessage({ type: 'POPUP_REQUEST', tabId: tab.id }, (response) => {
       if (chrome.runtime.lastError) {
         updateUI({ status: 'error', error: chrome.runtime.lastError.message });
         return;

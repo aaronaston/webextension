@@ -3,11 +3,13 @@ let pendingUpdate = null;
 let lastPayloadHash = '';
 
 function scheduleContextUpdate(reason) {
+  console.log('[CCA][content] scheduleContextUpdate', { reason });
   if (pendingUpdate) {
     clearTimeout(pendingUpdate);
   }
   pendingUpdate = setTimeout(() => {
     pendingUpdate = null;
+    console.log('[CCA][content] debounced update triggered', { reason });
     sendContext(reason);
   }, CONTEXT_UPDATE_DEBOUNCE_MS);
 }
@@ -16,9 +18,11 @@ function sendContext(reason) {
   const payload = collectContext(reason);
   const payloadHash = JSON.stringify([payload.title, payload.contextSummary, payload.dom.slice(0, 2000)]);
   if (payloadHash === lastPayloadHash) {
+    console.log('[CCA][content] skipping duplicate payload', { reason });
     return;
   }
   lastPayloadHash = payloadHash;
+  console.log('[CCA][content] sending PAGE_CONTEXT', { reason, title: payload.title, contextSummary: payload.contextSummary });
   chrome.runtime.sendMessage({
     type: 'PAGE_CONTEXT',
     payload,
@@ -28,6 +32,7 @@ function sendContext(reason) {
 function collectContext(reason) {
   const title = document.title || 'Untitled';
   const domText = extractDomText();
+  console.log('[CCA][content] collectContext', { reason, title, domLength: domText.length });
   return {
     url: window.location.href,
     title,
@@ -87,7 +92,10 @@ observer.observe(document.documentElement, {
   characterData: true,
 });
 
+console.log('[CCA][content] mutation observer initialized');
+
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
+  console.log('[CCA][content] document ready, scheduling initial update');
   scheduleContextUpdate('initial_load');
 } else {
   window.addEventListener('DOMContentLoaded', () => scheduleContextUpdate('dom_content_loaded'));

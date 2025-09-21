@@ -1,20 +1,19 @@
 {
-  "manifest_version": 3,
+  "manifest_version": 2,
   "name": "Clinical Context Assistant",
   "description": "Analyzes EMR pages with OpenAI using configurable prompts per site.",
   "version": "0.1.0",
   "permissions": [
     "storage",
-    "tabs"
-  ],
-  "host_permissions": [
+    "tabs",
     "<all_urls>",
     "https://api.openai.com/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "scripts": ["background.js"],
+    "persistent": false
   },
-  "action": {
+  "browser_action": {
     "default_popup": "popup.html",
     "default_title": "Clinical Context Assistant"
   },

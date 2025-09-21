@@ -1,5 +1,31 @@
 const DEFAULT_PROMPT = `You are a clinical workflow assistant. Summarize the clinical context, identify the active subject (patient, provider, population), and recommend safe next actions while highlighting privacy considerations.`;
 
+function storageGet(keys) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(keys, (items) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+      resolve(items);
+    });
+  });
+}
+
+function storageSet(items) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set(items, () => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   const apiKeyInput = document.getElementById('api-key');
   const defaultModelInput = document.getElementById('default-model');
@@ -31,8 +57,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     settings.defaultPrompt = defaultPromptInput.value;
 
     settings.sites = collectSiteSettings();
-    await chrome.storage.local.set({ openAI: settings });
-    showStatus('Saved!', 2000);
+    try {
+      await storageSet({ openAI: settings });
+      showStatus('Saved!', 2000);
+    } catch (error) {
+      showStatus(`Error saving: ${error.message}`);
+    }
   });
 
   function render() {
@@ -110,7 +140,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 async function loadSettings() {
-  const { openAI } = await chrome.storage.local.get({ openAI: null });
+  let openAI;
+  try {
+    ({ openAI } = await storageGet({ openAI: null }));
+  } catch (error) {
+    console.error('[CCA][options] Failed to load settings', error);
+    return {
+      apiKey: '',
+      model: 'gpt-4o-mini',
+      defaultPrompt: DEFAULT_PROMPT,
+      sites: {},
+    };
+  }
+
   if (openAI) {
     return {
       apiKey: openAI.apiKey || '',
