@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Clinical Context Assistant</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Clinical Context</h1>
+      <button id="open-options" title="Open configuration">⚙️</button>
+    </header>
+    <main>
+      <section id="status"></section>
+      <section id="context-summary" class="hidden">
+        <h2>Detected Context</h2>
+        <p id="context-text"></p>
+      </section>
+      <section id="analysis" class="hidden">
+        <h2>OpenAI Insight</h2>
+        <pre id="analysis-text"></pre>
+      </section>
+    </main>
+    <footer>
+      <small>Updates automatically when the page changes.</small>
+    </footer>
+    <script src="popup.js"></script>
+  </body>
+</html>

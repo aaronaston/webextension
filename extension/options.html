@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Clinical Context Assistant Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Extension Configuration</h1>
+      <section>
+        <h2>OpenAI Credentials</h2>
+        <label>
+          API Key
+          <input type="password" id="api-key" placeholder="sk-..." />
+        </label>
+        <label>
+          Default Model
+          <input type="text" id="default-model" placeholder="gpt-4o-mini" />
+        </label>
+      </section>
+
+      <section>
+        <h2>Default Prompt</h2>
+        <textarea id="default-prompt" rows="8"></textarea>
+      </section>
+
+      <section>
+        <h2>Site-specific Settings</h2>
+        <div class="add-site">
+          <input type="text" id="new-site" placeholder="example.com" />
+          <button id="add-site">Add site</button>
+        </div>
+        <div id="site-list"></div>
+      </section>
+
+      <div class="actions">
+        <button id="save">Save Changes</button>
+        <span id="status" role="status"></span>
+      </div>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
