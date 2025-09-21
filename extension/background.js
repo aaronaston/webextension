@@ -5,6 +5,9 @@ const MAX_DOM_CHARS = 4000;
 const tabState = new Map();
 let tabStateReady = loadTabStateFromStorage();
 
+const analysisCache = new Map();
+let cacheReady = loadAnalysisCacheFromStorage();
+
 function storageGet(keys) {
   return new Promise((resolve, reject) => {
     try {
@@ -87,6 +90,46 @@ async function getTabStateEntry(tabId) {
   return tabState.get(tabId);
 }
 
+async function loadAnalysisCacheFromStorage() {
+  try {
+    const { analysisCache: stored = {} } = await storageGet({ analysisCache: {} });
+    Object.entries(stored).forEach(([key, entry]) => {
+      if (entry) {
+        analysisCache.set(key, entry);
+      }
+    });
+  } catch (error) {
+    console.error('[CCA][background] Failed to load analysis cache', error);
+  }
+}
+
+function serializeAnalysisCache() {
+  const serialized = {};
+  analysisCache.forEach((value, key) => {
+    serialized[key] = value;
+  });
+  return serialized;
+}
+
+async function persistAnalysisCache() {
+  try {
+    await storageSet({ analysisCache: serializeAnalysisCache() });
+  } catch (error) {
+    console.error('[CCA][background] Failed to persist analysis cache', error);
+  }
+}
+
+async function setCacheEntry(key, value) {
+  await cacheReady;
+  analysisCache.set(key, value);
+  await persistAnalysisCache();
+}
+
+async function getCacheEntry(key) {
+  await cacheReady;
+  return analysisCache.get(key);
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab?.id;
   console.log('[CCA][background] message received', { type: message?.type, tabId });
@@ -140,6 +183,28 @@ async function handlePageContext(tabId, payload) {
   notifyPopupUpdate(tabId);
 
   const config = await loadConfig(payload.url);
+  const truncatedDom = payload.dom.slice(0, MAX_DOM_CHARS);
+  const cacheKey = generateCacheKey({
+    url: payload.url,
+    title: payload.title,
+    contextSummary: payload.contextSummary,
+    truncatedDom,
+    promptTemplate: config.prompt,
+  });
+
+  const cachedEntry = await getCacheEntry(cacheKey);
+  if (cachedEntry) {
+    console.log('[CCA][background] using cached analysis', { tabId });
+    await setTabStateEntry(tabId, {
+      status: 'success',
+      result: cachedEntry.result,
+      contextSummary: cachedEntry.contextSummary,
+      updatedAt: Date.now(),
+    });
+    notifyPopupUpdate(tabId);
+    return;
+  }
+
   if (!config.apiKey) {
     console.warn('[CCA][background] missing API key');
     await setTabStateEntry(tabId, {
@@ -151,13 +216,20 @@ async function handlePageContext(tabId, payload) {
     return;
   }
 
-  const prompt = buildPrompt(config.prompt, payload);
+  const prompt = buildPrompt(config.prompt, payload, truncatedDom);
   console.log('[CCA][background] querying OpenAI', { tabId, model: config.model });
 
   const openAIResponse = await queryOpenAI({
     apiKey: config.apiKey,
     model: config.model || DEFAULT_MODEL,
     prompt,
+  });
+
+  await setCacheEntry(cacheKey, {
+    result: openAIResponse,
+    contextSummary: payload.contextSummary,
+    promptTemplate: config.prompt,
+    cachedAt: Date.now(),
   });
 
   await setTabStateEntry(tabId, {
@@ -198,8 +270,10 @@ function extractHostname(url) {
   }
 }
 
-function buildPrompt(promptTemplate, payload) {
-  const truncatedDom = payload.dom.slice(0, MAX_DOM_CHARS);
+function buildPrompt(promptTemplate, payload, truncatedDomOverride) {
+  const truncatedDom = typeof truncatedDomOverride === 'string'
+    ? truncatedDomOverride
+    : payload.dom.slice(0, MAX_DOM_CHARS);
   const contextLines = [
     `Page URL: ${payload.url}`,
     `Title: ${payload.title}`,
@@ -211,6 +285,20 @@ function buildPrompt(promptTemplate, payload) {
   ];
 
   return `${promptTemplate}\n\n${contextLines.join('\n')}`;
+}
+
+function generateCacheKey({ url, title, contextSummary, truncatedDom, promptTemplate }) {
+  const data = JSON.stringify([url, title, contextSummary, truncatedDom, promptTemplate]);
+  return `cca_${hashString(data)}`;
+}
+
+function hashString(input) {
+  let hash = 0;
+  for (let index = 0; index < input.length; index += 1) {
+    hash = (hash << 5) - hash + input.charCodeAt(index);
+    hash |= 0; // force 32-bit
+  }
+  return (hash >>> 0).toString(16);
 }
 
 async function queryOpenAI({ apiKey, model, prompt }) {
