@@ -28,6 +28,41 @@
         </div>
       </section>
     </main>
+    <div
+      id="medication-modal"
+      class="modal hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="medication-modal-title"
+    >
+      <div class="modal-dialog">
+        <header class="modal-header">
+          <h2 id="medication-modal-title">Add Medication</h2>
+          <button
+            type="button"
+            id="medication-close"
+            class="icon-button"
+            aria-label="Close dialog"
+          >
+            ×
+          </button>
+        </header>
+        <form id="medication-form" class="modal-body">
+          <label for="medication-input">Medication and instructions</label>
+          <textarea
+            id="medication-input"
+            name="medication"
+            rows="3"
+            required
+            placeholder="e.g., Gabapentin 100 mg PO at bedtime"
+          ></textarea>
+          <div class="modal-actions">
+            <button type="button" id="medication-cancel" class="secondary">Cancel</button>
+            <button type="submit" class="primary">Add medication</button>
+          </div>
+        </form>
+      </div>
+    </div>
     <script src="app.js"></script>
   </body>
 </html>

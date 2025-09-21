@@ -950,6 +950,14 @@ const patientOverviewEl = document.getElementById("patient-overview");
 const ipsSectionsEl = document.getElementById("ips-sections");
 const encounterNotesEl = document.getElementById("encounter-notes");
 const notesContainerEl = document.getElementById("notes-container");
+const medicationModalEl = document.getElementById("medication-modal");
+const medicationFormEl = document.getElementById("medication-form");
+const medicationInputEl = document.getElementById("medication-input");
+const medicationCancelEl = document.getElementById("medication-cancel");
+const medicationCloseEl = document.getElementById("medication-close");
+
+let activePatientId = null;
+let lastFocusedElement = null;
 
 function calculateAge(dob) {
   const birthDate = new Date(dob);
@@ -987,6 +995,7 @@ function renderPatientList() {
 }
 
 function selectPatient(patientId) {
+  activePatientId = patientId;
   document
     .querySelectorAll(".patient-card")
     .forEach((card) => {
@@ -1058,7 +1067,25 @@ function renderIpsSections(ips) {
 
     const section = document.createElement("article");
     section.className = "ips-section";
-    section.innerHTML = `<h3>${title}</h3>`;
+
+    const header = document.createElement("div");
+    header.className = "section-header";
+
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    header.appendChild(heading);
+
+    if (key === "medications") {
+      const addButton = document.createElement("button");
+      addButton.type = "button";
+      addButton.className = "icon-button icon-button--accent";
+      addButton.innerHTML = '<span aria-hidden="true">+</span>';
+      addButton.setAttribute("aria-label", "Add medication");
+      addButton.addEventListener("click", openMedicationDialog);
+      header.appendChild(addButton);
+    }
+
+    section.appendChild(header);
 
     if (key === "vitalSigns" && typeof sectionData === "object") {
       section.appendChild(renderVitalSigns(sectionData));
@@ -1140,5 +1167,74 @@ function renderEncounters(encounters) {
 
   encounterNotesEl.classList.toggle("hidden", sorted.length === 0);
 }
+
+function openMedicationDialog(event) {
+  if (event) {
+    event.preventDefault();
+  }
+  if (!activePatientId) {
+    return;
+  }
+
+  lastFocusedElement = document.activeElement;
+  medicationInputEl.value = "";
+  medicationModalEl.classList.remove("hidden");
+  requestAnimationFrame(() => medicationInputEl.focus());
+}
+
+function closeMedicationDialog() {
+  medicationModalEl.classList.add("hidden");
+  if (lastFocusedElement && typeof lastFocusedElement.focus === "function") {
+    lastFocusedElement.focus();
+  }
+}
+
+medicationFormEl.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const value = medicationInputEl.value.trim();
+  if (!value) {
+    medicationInputEl.focus();
+    return;
+  }
+
+  const patient = patients.find((p) => p.id === activePatientId);
+  if (!patient) {
+    closeMedicationDialog();
+    return;
+  }
+
+  if (!Array.isArray(patient.ips.medications)) {
+    patient.ips.medications = [];
+  }
+  patient.ips.medications = [...patient.ips.medications, value];
+
+  closeMedicationDialog();
+  renderOverview(patient);
+  renderIpsSections(patient.ips);
+  renderEncounters(patient.encounters);
+});
+
+medicationCancelEl.addEventListener("click", (event) => {
+  event.preventDefault();
+  closeMedicationDialog();
+});
+
+medicationCloseEl.addEventListener("click", (event) => {
+  event.preventDefault();
+  closeMedicationDialog();
+});
+
+medicationModalEl.addEventListener("click", (event) => {
+  if (event.target === medicationModalEl) {
+    closeMedicationDialog();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !medicationModalEl.classList.contains("hidden")) {
+    event.preventDefault();
+    closeMedicationDialog();
+  }
+});
 
 renderPatientList();
