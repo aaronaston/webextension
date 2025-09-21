@@ -1,0 +1,212 @@
+:root {
+  font-family: "Segoe UI", Roboto, sans-serif;
+  color: #1f2933;
+  background-color: #f6f8fb;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #fff;
+  padding: 1.5rem 2rem;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.2);
+}
+
+header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+}
+
+header p {
+  margin: 0;
+  opacity: 0.9;
+}
+
+main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 1.5rem;
+  padding: 1.5rem 2rem 2rem;
+  box-sizing: border-box;
+}
+
+.patient-roster {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.patient-roster h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+#patient-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  overflow-y: auto;
+  max-height: calc(100vh - 280px);
+}
+
+.patient-card {
+  background: #f1f5f9;
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.patient-card:hover,
+.patient-card:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+  outline: none;
+}
+
+.patient-card.active {
+  background: #2563eb;
+  color: #fff;
+  border-color: #1d4ed8;
+}
+
+.patient-card .name {
+  font-weight: 600;
+}
+
+.patient-card .meta {
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
+.patient-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.panel {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1);
+}
+
+.panel h2 {
+  margin-top: 0;
+}
+
+.patient-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.overview-item {
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.overview-item h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  color: #0f172a;
+}
+
+.overview-item p {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.ips-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.25rem;
+}
+
+.ips-section {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.25rem;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.ips-section h3 {
+  margin: 0;
+  color: #1f2937;
+  font-size: 1.1rem;
+}
+
+.ips-section ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.note-card {
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  border-left: 4px solid #2563eb;
+}
+
+.note-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.note-card .meta {
+  font-size: 0.9rem;
+  color: #475569;
+  margin-bottom: 0.5rem;
+}
+
+.note-card .soap-section {
+  margin: 0.25rem 0;
+}
+
+.note-card .soap-section strong {
+  display: inline-block;
+  width: 2.5rem;
+  color: #1e293b;
+}
+
+.hidden {
+  display: none;
+}
+
+@media (max-width: 960px) {
+  main {
+    grid-template-columns: 1fr;
+  }
+
+  #patient-list {
+    max-height: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .patient-card {
+    flex: 1 1 45%;
+  }
+}
