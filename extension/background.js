@@ -72,10 +72,13 @@ async function persistTabState() {
   }
 }
 
-async function setTabStateEntry(tabId, state) {
+async function setTabStateEntry(tabId, state, options = {}) {
+  const { skipPersist = false } = options;
   await tabStateReady;
   tabState.set(tabId, state);
-  await persistTabState();
+  if (!skipPersist) {
+    await persistTabState();
+  }
 }
 
 async function deleteTabStateEntry(tabId) {
@@ -176,12 +179,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 async function handlePageContext(tabId, payload) {
   console.log('[CCA][background] handlePageContext', { tabId, reason: payload?.reason });
-  await setTabStateEntry(tabId, {
-    status: 'loading',
-    updatedAt: Date.now(),
-  });
-  notifyPopupUpdate(tabId);
-
   const config = await loadConfig(payload.url);
   const truncatedDom = payload.dom.slice(0, MAX_DOM_CHARS);
   const cacheKey = generateCacheKey({
@@ -217,16 +214,59 @@ async function handlePageContext(tabId, payload) {
   }
 
   const prompt = buildPrompt(config.prompt, payload, truncatedDom);
-  console.log('[CCA][background] querying OpenAI', { tabId, model: config.model });
+  console.log('[CCA][background] querying OpenAI (streaming)', { tabId, model: config.model });
 
-  const openAIResponse = await queryOpenAI({
-    apiKey: config.apiKey,
-    model: config.model || DEFAULT_MODEL,
-    prompt,
-  });
+  await setTabStateEntry(tabId, {
+    status: 'streaming',
+    result: '',
+    updatedAt: Date.now(),
+    contextSummary: payload.contextSummary,
+  }, { skipPersist: true });
+  notifyPopupUpdate(tabId);
+
+  let finalText = '';
+  try {
+    finalText = await streamOpenAI({
+      apiKey: config.apiKey,
+      model: config.model || DEFAULT_MODEL,
+      prompt,
+      onDelta: async (text) => {
+        await setTabStateEntry(tabId, {
+          status: 'streaming',
+          result: text,
+          updatedAt: Date.now(),
+          contextSummary: payload.contextSummary,
+        }, { skipPersist: true });
+        notifyPopupUpdate(tabId);
+      },
+    });
+  } catch (streamError) {
+    console.warn('[CCA][background] Streaming failed, falling back to non-streaming request', streamError);
+    try {
+      await setTabStateEntry(tabId, {
+        status: 'loading',
+        updatedAt: Date.now(),
+        contextSummary: payload.contextSummary,
+      }, { skipPersist: true });
+      notifyPopupUpdate(tabId);
+      finalText = await queryOpenAI({
+        apiKey: config.apiKey,
+        model: config.model || DEFAULT_MODEL,
+        prompt,
+      });
+    } catch (fallbackError) {
+      await setTabStateEntry(tabId, {
+        status: 'error',
+        error: fallbackError.message,
+        updatedAt: Date.now(),
+      });
+      notifyPopupUpdate(tabId);
+      throw fallbackError;
+    }
+  }
 
   await setCacheEntry(cacheKey, {
-    result: openAIResponse,
+    result: finalText,
     contextSummary: payload.contextSummary,
     promptTemplate: config.prompt,
     cachedAt: Date.now(),
@@ -234,7 +274,7 @@ async function handlePageContext(tabId, payload) {
 
   await setTabStateEntry(tabId, {
     status: 'success',
-    result: openAIResponse,
+    result: finalText,
     updatedAt: Date.now(),
     contextSummary: payload.contextSummary,
   });
@@ -337,4 +377,167 @@ async function queryOpenAI({ apiKey, model, prompt }) {
   }
 
   return JSON.stringify(data);
+}
+
+async function streamOpenAI({ apiKey, model, prompt, onDelta }) {
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      input: prompt,
+      stream: true,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => ({ message: response.statusText }));
+    throw new Error(`OpenAI request failed: ${errorPayload.message || response.statusText}`);
+  }
+
+  if (!response.body || !response.body.getReader) {
+    throw new Error('Streaming not supported in this environment');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let finalText = '';
+  let streamDone = false;
+
+  const processDataPayload = async (payload) => {
+    const trimmed = payload.trim();
+    if (!trimmed) {
+      return;
+    }
+    if (trimmed === '[DONE]') {
+      streamDone = true;
+      return;
+    }
+
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch (error) {
+      console.warn('[CCA][background] Unable to parse streaming chunk', error, trimmed);
+      return;
+    }
+
+    if (typeof event.index === 'number' && event.index !== 0) {
+      return;
+    }
+
+    const type = event.type || '';
+    if (type === 'response.error') {
+      const message = event.error?.message || 'OpenAI streaming error';
+      throw new Error(message);
+    }
+
+    if (type === 'response.output_text.delta') {
+      const delta = typeof event.delta === 'string' ? event.delta : '';
+      if (delta) {
+        finalText += delta;
+        if (onDelta) {
+          await onDelta(finalText);
+        }
+      }
+      return;
+    }
+
+    const normalized = normalizeOutputText(event.output_text)
+      || normalizeOutputText(event.delta)
+      || normalizeOutputText(event.text)
+      || normalizeOutputText(event.response?.output_text);
+
+    if (normalized) {
+      finalText = normalized;
+      if (onDelta) {
+        await onDelta(finalText);
+      }
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      buffer += decoder.decode();
+    } else {
+      buffer += decoder.decode(value, { stream: true });
+    }
+
+    let boundary;
+    while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+      const rawEvent = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const lines = rawEvent.split('\n');
+      for (const line of lines) {
+        if (line.startsWith('data:')) {
+          const payload = line.slice(5);
+          await processDataPayload(payload);
+          if (streamDone) {
+            break;
+          }
+        }
+      }
+      if (streamDone) {
+        break;
+      }
+    }
+
+    if (done || streamDone) {
+      break;
+    }
+  }
+
+  if (!streamDone && buffer.trim()) {
+    const lines = buffer.trim().split('\n');
+    for (const line of lines) {
+      if (line.startsWith('data:')) {
+        await processDataPayload(line.slice(5));
+        if (streamDone) {
+          break;
+        }
+      }
+    }
+  }
+
+  return finalText;
+}
+
+function normalizeOutputText(value) {
+  if (!value) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.filter((entry) => typeof entry === 'string' && entry.length > 0).join('');
+  }
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') {
+      return value.text;
+    }
+    if (Array.isArray(value.text)) {
+      return value.text.join('');
+    }
+    if (Array.isArray(value.content)) {
+      return value.content
+        .map((chunk) => {
+          if (typeof chunk === 'string') {
+            return chunk;
+          }
+          if (chunk && typeof chunk === 'object' && typeof chunk.text === 'string') {
+            return chunk.text;
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('');
+    }
+  }
+  return '';
 }

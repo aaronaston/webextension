@@ -65,6 +65,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'error':
         statusEl.textContent = `Error: ${state.error || 'Unknown error'}`;
         break;
+      case 'streaming':
+        statusEl.textContent = 'Generating analysis…';
+        if (state.contextSummary) {
+          contextSection.classList.remove('hidden');
+          contextText.textContent = state.contextSummary;
+        }
+        analysisSection.classList.remove('hidden');
+        if (state.result) {
+          renderMarkdown(analysisText, state.result);
+          analysisText.scrollTop = 0;
+        } else {
+          analysisText.textContent = 'Waiting for response…';
+        }
+        break;
       case 'success':
         statusEl.textContent = `Updated ${new Date(state.updatedAt).toLocaleTimeString()}`;
         if (state.contextSummary) {
