@@ -11,6 +11,10 @@
       <button id="open-options" title="Open configuration">⚙️</button>
     </header>
     <main>
+      <section id="detection" class="detection">
+        <span id="detection-badge" class="badge">Detecting…</span>
+        <p id="detection-message">Analyzing page content…</p>
+      </section>
       <section id="status"></section>
       <section id="context-summary" class="hidden">
         <h2>Detected Context</h2>
@@ -19,6 +23,25 @@
       <section id="analysis" class="hidden">
         <h2>OpenAI Insight</h2>
         <div id="analysis-text" class="analysis-markdown"></div>
+      </section>
+      <section id="chat" class="chat hidden">
+        <h2>EMR Chat</h2>
+        <div id="chat-controls" class="chat-controls hidden">
+          <button id="default-prompt-btn" type="button" class="chip"></button>
+        </div>
+        <div id="chat-log" class="chat-log" role="log" aria-live="polite"></div>
+        <form id="chat-form" class="chat-form">
+          <label class="visually-hidden" for="chat-input">Message</label>
+          <textarea
+            id="chat-input"
+            rows="2"
+            placeholder="Ask about this chart…"
+            required
+          ></textarea>
+          <div class="chat-actions">
+            <button type="submit" id="chat-submit">Send</button>
+          </div>
+        </form>
       </section>
     </main>
     <footer>

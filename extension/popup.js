@@ -4,11 +4,85 @@ document.addEventListener('DOMContentLoaded', async () => {
   const contextText = document.getElementById('context-text');
   const analysisSection = document.getElementById('analysis');
   const analysisText = document.getElementById('analysis-text');
+  const detectionBadge = document.getElementById('detection-badge');
+  const detectionMessage = document.getElementById('detection-message');
+  const chatSection = document.getElementById('chat');
+  const chatControls = document.getElementById('chat-controls');
+  const defaultPromptBtn = document.getElementById('default-prompt-btn');
+  const chatLog = document.getElementById('chat-log');
+  const chatForm = document.getElementById('chat-form');
+  const chatInput = document.getElementById('chat-input');
+  const chatSubmit = document.getElementById('chat-submit');
   const openOptionsBtn = document.getElementById('open-options');
+
+  let activeTabId = null;
 
   openOptionsBtn.addEventListener('click', () => {
     chrome.runtime.openOptionsPage();
   });
+
+  chatForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const message = (chatInput.value || '').trim();
+    if (!message) {
+      chatInput.focus();
+      return;
+    }
+    chatInput.value = '';
+    sendChatMessage({ text: message });
+  });
+
+  defaultPromptBtn.addEventListener('click', () => {
+    sendChatMessage({ useDefault: true });
+  });
+
+  chatInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      chatForm.requestSubmit();
+    }
+  });
+
+  function sendChatMessage({ text = '', useDefault = false }) {
+    if (!activeTabId) {
+      statusEl.textContent = 'No active tab detected.';
+      return;
+    }
+
+    const payload = {
+      type: 'CHAT_REQUEST',
+      tabId: activeTabId,
+    };
+
+    if (useDefault) {
+      payload.useDefaultPrompt = true;
+    } else if (text) {
+      payload.message = text;
+    } else {
+      chatInput.focus();
+      return;
+    }
+
+    chatSubmit.disabled = true;
+    chatInput.disabled = true;
+    defaultPromptBtn.disabled = true;
+
+    chrome.runtime.sendMessage(payload, (response) => {
+      if (chrome.runtime.lastError) {
+        statusEl.textContent = chrome.runtime.lastError.message;
+        chatSubmit.disabled = false;
+        chatInput.disabled = false;
+        defaultPromptBtn.disabled = false;
+        return;
+      }
+      if (response && response.ok === false && response.error) {
+        statusEl.textContent = response.error;
+        chatSubmit.disabled = false;
+        chatInput.disabled = false;
+        defaultPromptBtn.disabled = false;
+      }
+    });
+  }
 
   function queryTabs(queryInfo) {
     return new Promise((resolve, reject) => {
@@ -37,6 +111,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       updateUI({ status: 'error', error: 'No active tab detected.' });
       return;
     }
+    activeTabId = tab.id;
     chrome.runtime.sendMessage({ type: 'POPUP_REQUEST', tabId: tab.id }, (response) => {
       if (chrome.runtime.lastError) {
         updateUI({ status: 'error', error: chrome.runtime.lastError.message });
@@ -46,7 +121,77 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  function updateUI(state) {
+  function updateUI(rawState) {
+    const state = normalizeState(rawState);
+    renderDetection(state);
+    renderAnalysis(state);
+    renderChat(state);
+  }
+
+  function normalizeState(rawState) {
+    const state = rawState || {};
+    let status = state.status || 'idle';
+    if ((status === 'streaming' || status === 'success') && !(state.result && state.result.trim())) {
+      status = 'ready';
+    }
+    return {
+      status,
+      result: state.result || '',
+      contextSummary: state.contextSummary || '',
+      updatedAt: state.updatedAt || null,
+      message: state.message || '',
+      error: state.error || '',
+      isEmr: Boolean(state.isEmr),
+      defaultPromptLabel: state.defaultPromptLabel || '',
+      patientLabel: state.patientLabel || state.lastContext?.title || '',
+      patientKey: state.patientKey || null,
+      activeChatKey: state.activeChatKey || null,
+      lastContext: state.lastContext || null,
+      chatSessions: state.chatSessions || {},
+      chat: normalizeChat(state.chat),
+    };
+  }
+
+  function normalizeChat(chatState) {
+    const base = {
+      status: 'idle',
+      messages: [],
+      pendingAssistant: null,
+      error: null,
+      updatedAt: null,
+    };
+    if (!chatState || typeof chatState !== 'object') {
+      return base;
+    }
+    return {
+      ...base,
+      ...chatState,
+      messages: Array.isArray(chatState.messages) ? chatState.messages : [],
+      pendingAssistant: chatState.pendingAssistant || null,
+      error: chatState.error || null,
+    };
+  }
+
+  function renderDetection(state) {
+    detectionBadge.classList.remove('emr', 'not-emr');
+    if (!state.isEmr) {
+      detectionBadge.textContent = 'No EMR detected';
+      detectionBadge.classList.add('not-emr');
+      detectionMessage.textContent = 'Open a supported chart to enable chat.';
+    } else {
+      const label = state.patientLabel || 'this chart';
+      detectionBadge.textContent = 'EMR detected';
+      detectionBadge.classList.add('emr');
+      if (state.status === 'needs_api_key') {
+        detectionMessage.textContent = 'Add an OpenAI API key in options to enable chat.';
+      } else {
+        detectionMessage.textContent = `Chat with ${label} using the form below.`;
+      }
+    }
+  }
+
+  function renderAnalysis(state) {
+    const status = state.status;
     const previousScrollTop = analysisText.scrollTop;
     const previousScrollHeight = analysisText.scrollHeight;
     const scrollableHeight = Math.max(previousScrollHeight - analysisText.clientHeight, 0);
@@ -56,23 +201,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     contextSection.classList.add('hidden');
     analysisSection.classList.add('hidden');
     contextText.textContent = '';
+    analysisText.innerHTML = '';
 
-    switch (state.status) {
+    switch (status) {
+      case 'no_emr':
+        statusEl.textContent = 'No EMR detected. Open a supported chart to start chatting.';
+        break;
+      case 'ready':
+        statusEl.textContent = 'Chat ready. Ask a question below.';
+        break;
       case 'idle':
-        statusEl.textContent = 'Waiting for page analysis.';
-        analysisText.textContent = '';
-        contentUpdated = true;
+        statusEl.textContent = 'Detecting EMR context...';
         break;
       case 'loading':
-        statusEl.textContent = 'Analyzing page with OpenAI…';
+        statusEl.textContent = 'Analyzing page with OpenAI...';
         analysisSection.classList.remove('hidden');
-        analysisText.textContent = 'Contacting OpenAI…';
+        analysisText.textContent = 'Contacting OpenAI...';
         contentUpdated = true;
         break;
       case 'needs_api_key':
         statusEl.textContent = state.message || 'Add an OpenAI API key in options.';
-        analysisText.textContent = '';
-        contentUpdated = true;
         break;
       case 'error':
         statusEl.textContent = `Error: ${state.error || 'Unknown error'}`;
@@ -81,23 +229,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         contentUpdated = true;
         break;
       case 'streaming':
-        statusEl.textContent = 'Generating analysis…';
-        if (state.contextSummary) {
+        statusEl.textContent = 'Generating analysis...';
+        if (state.isEmr && state.contextSummary) {
           contextSection.classList.remove('hidden');
           contextText.textContent = state.contextSummary;
         }
         analysisSection.classList.remove('hidden');
         if (state.result) {
           renderMarkdown(analysisText, state.result);
-          contentUpdated = true;
-        } else if (analysisText.textContent !== 'Waiting for response…') {
-          analysisText.textContent = 'Waiting for response…';
-          contentUpdated = true;
+        } else {
+          analysisText.textContent = 'Waiting for response...';
         }
+        contentUpdated = true;
         break;
       case 'success':
-        statusEl.textContent = `Updated ${new Date(state.updatedAt).toLocaleTimeString()}`;
-        if (state.contextSummary) {
+        statusEl.textContent = state.updatedAt
+          ? `Updated ${new Date(state.updatedAt).toLocaleTimeString()}`
+          : 'Analysis ready.';
+        if (state.isEmr && state.contextSummary) {
           contextSection.classList.remove('hidden');
           contextText.textContent = state.contextSummary;
         }
@@ -105,20 +254,15 @@ document.addEventListener('DOMContentLoaded', async () => {
           analysisSection.classList.remove('hidden');
           renderMarkdown(analysisText, state.result);
           contentUpdated = true;
-        } else {
-          analysisText.textContent = '';
-          contentUpdated = true;
         }
         break;
       default:
         statusEl.textContent = 'Status unavailable.';
-        analysisText.textContent = '';
-        contentUpdated = true;
     }
 
     if (contentUpdated) {
       requestAnimationFrame(() => {
-        if (state.status === 'streaming' || state.status === 'success') {
+        if (status === 'streaming' || status === 'success') {
           if (userWasAtBottom) {
             analysisText.scrollTop = analysisText.scrollHeight;
           } else {
@@ -129,8 +273,93 @@ document.addEventListener('DOMContentLoaded', async () => {
           analysisText.scrollTop = 0;
         }
       });
+    } else {
+      analysisText.scrollTop = 0;
     }
   }
+
+  function renderChat(state) {
+    const chatState = state.chat;
+    const label = state.patientLabel || 'this chart';
+
+    if (!state.isEmr) {
+      chatSection.classList.add('hidden');
+      chatSubmit.disabled = true;
+      chatInput.disabled = true;
+      chatInput.placeholder = 'Chat unavailable';
+      defaultPromptBtn.disabled = true;
+      defaultPromptBtn.removeAttribute('title');
+      return;
+    }
+
+    chatSection.classList.remove('hidden');
+
+    if (state.status === 'needs_api_key') {
+      chatControls.classList.add('hidden');
+      chatLog.innerHTML = '';
+      chatLog.appendChild(renderChatMessage({
+        role: 'assistant',
+        content: 'Add an OpenAI API key in options to start chatting.',
+      }));
+      chatInput.disabled = true;
+      chatSubmit.disabled = true;
+      defaultPromptBtn.disabled = true;
+      defaultPromptBtn.removeAttribute('title');
+      chatInput.placeholder = 'Chat unavailable';
+      return;
+    }
+
+    if (state.defaultPromptLabel && chatState.messages.length === 0) {
+      chatControls.classList.remove('hidden');
+      defaultPromptBtn.textContent = state.defaultPromptLabel;
+      defaultPromptBtn.title = `Send "${state.defaultPromptLabel}"`;
+    } else {
+      chatControls.classList.add('hidden');
+      defaultPromptBtn.removeAttribute('title');
+    }
+
+    chatInput.placeholder = `Ask about ${label}...`;
+
+    const disableInput = chatState.status === 'streaming' || chatState.status === 'disabled';
+    chatInput.disabled = disableInput;
+    chatSubmit.disabled = disableInput;
+    defaultPromptBtn.disabled = disableInput;
+
+    const wasAtBottom = chatLog.scrollHeight - chatLog.clientHeight - chatLog.scrollTop <= 16;
+    chatLog.innerHTML = '';
+
+    chatState.messages.forEach((entry) => {
+      chatLog.appendChild(renderChatMessage(entry));
+    });
+
+    if (chatState.pendingAssistant) {
+      chatLog.appendChild(renderChatMessage({
+        role: 'assistant',
+        content: chatState.pendingAssistant,
+        streaming: true,
+      }));
+    }
+
+    if (chatState.status === 'error' && chatState.error) {
+      chatLog.appendChild(renderChatMessage({
+        role: 'assistant',
+        content: `Warning: ${chatState.error}`,
+        error: true,
+      }));
+    } else if (chatState.messages.length === 0 && !chatState.pendingAssistant) {
+      chatLog.appendChild(renderChatMessage({
+        role: 'assistant',
+        content: `Ask a question about ${label} to begin.`,
+      }));
+    }
+
+    requestAnimationFrame(() => {
+      if (wasAtBottom) {
+        chatLog.scrollTop = chatLog.scrollHeight;
+      }
+    });
+  }
+
 
   function renderMarkdown(target, markdown) {
     target.innerHTML = '';
@@ -256,6 +485,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     flushParagraph();
     flushList();
+  }
+
+  function renderChatMessage(entry) {
+    const role = entry.role === 'assistant' ? 'assistant' : 'user';
+    const wrapper = document.createElement('div');
+    const classes = ['chat-message', role];
+    if (entry.streaming) {
+      classes.push('streaming');
+    }
+    if (entry.error) {
+      classes.push('error');
+    }
+    wrapper.className = classes.join(' ');
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+
+    const content = entry.content || '';
+    if (role === 'assistant' && !entry.error) {
+      if (entry.streaming) {
+        bubble.textContent = content;
+      } else {
+        renderMarkdown(bubble, content);
+      }
+    } else {
+      bubble.textContent = content;
+    }
+
+    if (entry.error) {
+      bubble.classList.add('error');
+    }
+
+    wrapper.appendChild(bubble);
+    return wrapper;
   }
 
   function parseInline(text, parent) {

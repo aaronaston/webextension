@@ -5,8 +5,91 @@ const MAX_DOM_CHARS = 4000;
 const tabState = new Map();
 let tabStateReady = loadTabStateFromStorage();
 
-const analysisCache = new Map();
-let cacheReady = loadAnalysisCacheFromStorage();
+
+function defaultChatState() {
+  return {
+    status: 'idle',
+    messages: [],
+    pendingAssistant: null,
+    error: null,
+    updatedAt: null,
+  };
+}
+
+function defaultTabState() {
+  return {
+    status: 'idle',
+    result: '',
+    updatedAt: null,
+    contextSummary: '',
+    isEmr: false,
+    chat: defaultChatState(),
+    chatSessions: {},
+    activeChatKey: null,
+    defaultPrompt: '',
+    defaultPromptLabel: '',
+    model: DEFAULT_MODEL,
+    lastContext: null,
+    patientKey: null,
+    patientLabel: '',
+    message: '',
+  };
+}
+
+function normalizeTabState(state) {
+  if (!state || typeof state !== 'object') {
+    return defaultTabState();
+  }
+  const normalized = {
+    ...defaultTabState(),
+    ...state,
+  };
+  const sessions = normalized.chatSessions && typeof normalized.chatSessions === 'object'
+    ? { ...normalized.chatSessions }
+    : {};
+  Object.keys(sessions).forEach((key) => {
+    sessions[key] = normalizeChatState(sessions[key]);
+  });
+  normalized.chatSessions = sessions;
+  let activeKey = normalized.activeChatKey && sessions[normalized.activeChatKey]
+    ? normalized.activeChatKey
+    : null;
+  if (!activeKey) {
+    const keys = Object.keys(sessions);
+    activeKey = keys.length > 0 ? keys[0] : null;
+  }
+  if (activeKey && !sessions[activeKey]) {
+    sessions[activeKey] = defaultChatState();
+  }
+  normalized.activeChatKey = activeKey;
+  normalized.chat = normalizeChatState(activeKey ? sessions[activeKey] : defaultChatState());
+  return normalized;
+}
+
+function summarizePromptLabel(prompt) {
+  if (!prompt || typeof prompt !== 'string') {
+    return '';
+  }
+  const cleaned = prompt.replace(/\s+/g, ' ').trim();
+  if (!cleaned) {
+    return '';
+  }
+  const words = cleaned.split(' ').slice(0, 5).join(' ');
+  return words.length < cleaned.length ? `${words}...` : words;
+}
+
+function normalizeChatState(chatState) {
+  if (!chatState || typeof chatState !== 'object') {
+    return defaultChatState();
+  }
+  return {
+    ...defaultChatState(),
+    ...chatState,
+    messages: Array.isArray(chatState.messages) ? [...chatState.messages] : [],
+    pendingAssistant: chatState.pendingAssistant || null,
+    error: chatState.error || null,
+  };
+}
 
 function storageGet(keys) {
   return new Promise((resolve, reject) => {
@@ -48,7 +131,7 @@ async function loadTabStateFromStorage() {
     Object.entries(stored).forEach(([storedTabId, state]) => {
       const numericTabId = Number(storedTabId);
       if (!Number.isNaN(numericTabId) && state) {
-        tabState.set(numericTabId, state);
+        tabState.set(numericTabId, normalizeTabState(state));
       }
     });
   } catch (error) {
@@ -72,13 +155,63 @@ async function persistTabState() {
   }
 }
 
-async function setTabStateEntry(tabId, state, options = {}) {
+async function setTabStateEntry(tabId, updates, options = {}) {
   const { skipPersist = false } = options;
   await tabStateReady;
-  tabState.set(tabId, state);
+  const current = normalizeTabState(tabState.get(tabId));
+  const next = {
+    ...current,
+  };
+
+  if (updates && typeof updates === 'object') {
+    Object.entries(updates).forEach(([key, value]) => {
+      switch (key) {
+        case 'chatSessions': {
+          const mergedSessions = { ...current.chatSessions };
+          Object.entries(value || {}).forEach(([sessionKey, sessionValue]) => {
+            mergedSessions[sessionKey] = normalizeChatState(sessionValue);
+          });
+          next.chatSessions = mergedSessions;
+          break;
+        }
+        case 'activeChatKey':
+          next.activeChatKey = value;
+          break;
+        case 'chat':
+          // chat is derived below
+          break;
+        default:
+          next[key] = value;
+      }
+    });
+  }
+
+  if (!next.chatSessions || typeof next.chatSessions !== 'object') {
+    next.chatSessions = {};
+  }
+
+  let activeKey = next.activeChatKey && next.chatSessions[next.activeChatKey]
+    ? next.activeChatKey
+    : null;
+  if (!activeKey) {
+    const keys = Object.keys(next.chatSessions);
+    activeKey = keys.length > 0 ? keys[0] : null;
+  }
+  if (activeKey && !next.chatSessions[activeKey]) {
+    next.chatSessions[activeKey] = defaultChatState();
+  }
+  next.activeChatKey = activeKey;
+  const activeChat = normalizeChatState(activeKey ? next.chatSessions[activeKey] : defaultChatState());
+  if (activeKey) {
+    next.chatSessions[activeKey] = activeChat;
+  }
+  next.chat = activeChat;
+
+  tabState.set(tabId, next);
   if (!skipPersist) {
     await persistTabState();
   }
+  return next;
 }
 
 async function deleteTabStateEntry(tabId) {
@@ -90,47 +223,15 @@ async function deleteTabStateEntry(tabId) {
 
 async function getTabStateEntry(tabId) {
   await tabStateReady;
-  return tabState.get(tabId);
-}
-
-async function loadAnalysisCacheFromStorage() {
-  try {
-    const { analysisCache: stored = {} } = await storageGet({ analysisCache: {} });
-    Object.entries(stored).forEach(([key, entry]) => {
-      if (entry) {
-        analysisCache.set(key, entry);
-      }
-    });
-  } catch (error) {
-    console.error('[CCA][background] Failed to load analysis cache', error);
+  const state = tabState.get(tabId);
+  if (!state) {
+    const normalized = defaultTabState();
+    tabState.set(tabId, normalized);
+    return normalized;
   }
-}
-
-function serializeAnalysisCache() {
-  const serialized = {};
-  analysisCache.forEach((value, key) => {
-    serialized[key] = value;
-  });
-  return serialized;
-}
-
-async function persistAnalysisCache() {
-  try {
-    await storageSet({ analysisCache: serializeAnalysisCache() });
-  } catch (error) {
-    console.error('[CCA][background] Failed to persist analysis cache', error);
-  }
-}
-
-async function setCacheEntry(key, value) {
-  await cacheReady;
-  analysisCache.set(key, value);
-  await persistAnalysisCache();
-}
-
-async function getCacheEntry(key) {
-  await cacheReady;
-  return analysisCache.get(key);
+  const normalized = normalizeTabState(state);
+  tabState.set(tabId, normalized);
+  return normalized;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -169,6 +270,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true; // async sendResponse
   }
+
+  if (message?.type === 'CHAT_REQUEST') {
+    const targetTabId = tabId || message.tabId;
+    if (!targetTabId) {
+      sendResponse({ ok: false, error: 'Unable to determine active tab.' });
+      return false;
+    }
+
+    sendResponse({ ok: true });
+
+    (async () => {
+      try {
+        await handleChatRequest(targetTabId, message);
+      } catch (error) {
+        console.error('[CCA][background] Chat request failed', error);
+        const current = await getTabStateEntry(targetTabId);
+        await setTabStateEntry(targetTabId, {
+          chat: {
+            ...current.chat,
+            status: 'error',
+            error: error.message,
+            pendingAssistant: null,
+            updatedAt: Date.now(),
+          },
+        });
+        notifyPopupUpdate(targetTabId);
+      }
+    })();
+
+    return true;
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -179,106 +311,257 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 async function handlePageContext(tabId, payload) {
   console.log('[CCA][background] handlePageContext', { tabId, reason: payload?.reason });
+  const prevState = await getTabStateEntry(tabId);
   const config = await loadConfig(payload.url);
   const truncatedDom = payload.dom.slice(0, MAX_DOM_CHARS);
-  const cacheKey = generateCacheKey({
-    url: payload.url,
-    title: payload.title,
-    contextSummary: payload.contextSummary,
-    truncatedDom,
-    promptTemplate: config.prompt,
-  });
+  const now = Date.now();
+  const contextChanged = Boolean(
+    prevState.lastContext
+      && (prevState.lastContext.url !== payload.url
+        || prevState.lastContext.title !== payload.title
+        || prevState.lastContext.contextSummary !== payload.contextSummary)
+  );
 
-  const cachedEntry = await getCacheEntry(cacheKey);
-  if (cachedEntry) {
-    console.log('[CCA][background] using cached analysis', { tabId });
-    await setTabStateEntry(tabId, {
-      status: 'success',
-      result: cachedEntry.result,
-      contextSummary: cachedEntry.contextSummary,
-      updatedAt: Date.now(),
-    });
+  const patientKey = payload.patientKey || `${payload.url}#${payload.title}`;
+  const patientLabel = payload.patientLabel || payload.title || 'Current chart';
+
+  const updates = {
+    isEmr: Boolean(payload.isEmr),
+    defaultPrompt: config.prompt || DEFAULT_PROMPT,
+    defaultPromptLabel: summarizePromptLabel(config.prompt || DEFAULT_PROMPT),
+    model: config.model || DEFAULT_MODEL,
+    contextSummary: payload.contextSummary,
+    lastContext: {
+      url: payload.url,
+      title: payload.title,
+      reason: payload.reason,
+      contextSummary: payload.contextSummary,
+      dom: truncatedDom,
+    },
+    patientKey,
+    patientLabel,
+  };
+
+  if (!payload.isEmr) {
+    updates.status = 'no_emr';
+    updates.result = '';
+    updates.updatedAt = now;
+    updates.isEmr = false;
+    updates.message = 'No EMR detected on this page.';
+    updates.patientKey = null;
+    updates.patientLabel = '';
+    updates.activeChatKey = null;
+    await setTabStateEntry(tabId, updates);
     notifyPopupUpdate(tabId);
     return;
   }
 
   if (!config.apiKey) {
-    console.warn('[CCA][background] missing API key');
-    await setTabStateEntry(tabId, {
-      status: 'needs_api_key',
-      message: 'Set an OpenAI API key in the extension options.',
-      updatedAt: Date.now(),
-    });
+    updates.status = 'needs_api_key';
+    updates.result = '';
+    updates.updatedAt = now;
+    updates.isEmr = true;
+    updates.message = 'Add an OpenAI API key in options to enable chat.';
+    updates.activeChatKey = patientKey;
+    if (!prevState.chatSessions?.[patientKey]) {
+      updates.chatSessions = { [patientKey]: defaultChatState() };
+    }
+    await setTabStateEntry(tabId, updates);
     notifyPopupUpdate(tabId);
     return;
   }
 
-  const prompt = buildPrompt(config.prompt, payload, truncatedDom);
-  console.log('[CCA][background] querying OpenAI (streaming)', { tabId, model: config.model });
+  updates.status = 'ready';
+  updates.result = '';
+  updates.updatedAt = now;
+  updates.isEmr = true;
+  updates.message = '';
+  updates.activeChatKey = patientKey;
+
+  if (!prevState.chatSessions?.[patientKey]) {
+    updates.chatSessions = { [patientKey]: defaultChatState() };
+  }
+
+  if (contextChanged && prevState.chatSessions?.[patientKey]) {
+    const restoredSession = normalizeChatState(prevState.chatSessions[patientKey]);
+    updates.chatSessions = {
+      ...(updates.chatSessions || {}),
+      [patientKey]: {
+        ...restoredSession,
+        status: 'idle',
+        pendingAssistant: null,
+        error: null,
+      },
+    };
+  }
+
+  await setTabStateEntry(tabId, updates);
+  notifyPopupUpdate(tabId);
+}
+
+async function handleChatRequest(tabId, message) {
+  const state = await getTabStateEntry(tabId);
+  if (!state.isEmr) {
+    throw new Error('No EMR detected on this page.');
+  }
+
+  const patientKey = state.activeChatKey;
+  if (!patientKey) {
+    throw new Error('No patient selected. Navigate to a patient chart to start chatting.');
+  }
+
+  const existingSession = normalizeChatState(state.chatSessions?.[patientKey]);
+  if (existingSession.status === 'streaming') {
+    throw new Error('Assistant is already responding.');
+  }
+
+  const contextUrl = state.lastContext?.url || message.pageUrl || state.lastContext?.url || '';
+  const config = await loadConfig(contextUrl);
+  if (!config.apiKey) {
+    throw new Error('OpenAI API key is required for chat.');
+  }
+
+  const defaultPromptText = state.defaultPrompt || config.prompt || DEFAULT_PROMPT;
+  let userMessage = '';
+  if (message.useDefaultPrompt) {
+    userMessage = defaultPromptText;
+  } else {
+    userMessage = (message.message || '').trim();
+  }
+
+  if (!userMessage) {
+    throw new Error('Enter a message to send.');
+  }
+
+  const userEntry = {
+    role: 'user',
+    content: userMessage,
+    createdAt: Date.now(),
+  };
+
+  const conversationMessages = [...existingSession.messages, userEntry];
 
   await setTabStateEntry(tabId, {
-    status: 'streaming',
-    result: '',
-    updatedAt: Date.now(),
-    contextSummary: payload.contextSummary,
+    activeChatKey: patientKey,
+    chatSessions: {
+      [patientKey]: {
+        ...existingSession,
+        status: 'streaming',
+        messages: conversationMessages,
+        pendingAssistant: '',
+        error: null,
+        updatedAt: Date.now(),
+      },
+    },
+    message: '',
   }, { skipPersist: true });
   notifyPopupUpdate(tabId);
 
+  const lastContext = state.lastContext || {};
+  const promptPayload = {
+    url: lastContext.url || '',
+    title: lastContext.title || '',
+    dom: lastContext.dom || '',
+    reason: 'chat',
+    contextSummary: lastContext.contextSummary || state.contextSummary || '',
+  };
+  const systemPrompt = buildPrompt(defaultPromptText, promptPayload, lastContext.dom || '');
+  const conversationLines = conversationMessages
+    .map((entry) => {
+      const speaker = entry.role === 'assistant' ? 'Assistant' : 'Clinician';
+      return `${speaker}: ${entry.content}`;
+    })
+    .join('\n');
+  const chatPrompt = `${systemPrompt}
+
+Conversation so far:
+${conversationLines}
+Assistant:`;
+
+  const model = state.model || config.model || DEFAULT_MODEL;
   let finalText = '';
+
   try {
     finalText = await streamOpenAI({
       apiKey: config.apiKey,
-      model: config.model || DEFAULT_MODEL,
-      prompt,
+      model,
+      prompt: chatPrompt,
       onDelta: async (text) => {
         await setTabStateEntry(tabId, {
-          status: 'streaming',
-          result: text,
-          updatedAt: Date.now(),
-          contextSummary: payload.contextSummary,
+          activeChatKey: patientKey,
+          chatSessions: {
+            [patientKey]: {
+              ...existingSession,
+              status: 'streaming',
+              messages: conversationMessages,
+              pendingAssistant: text,
+              error: null,
+              updatedAt: Date.now(),
+            },
+          },
         }, { skipPersist: true });
         notifyPopupUpdate(tabId);
       },
     });
   } catch (streamError) {
-    console.warn('[CCA][background] Streaming failed, falling back to non-streaming request', streamError);
-    try {
-      await setTabStateEntry(tabId, {
-        status: 'loading',
-        updatedAt: Date.now(),
-        contextSummary: payload.contextSummary,
-      }, { skipPersist: true });
-      notifyPopupUpdate(tabId);
-      finalText = await queryOpenAI({
-        apiKey: config.apiKey,
-        model: config.model || DEFAULT_MODEL,
-        prompt,
-      });
-    } catch (fallbackError) {
-      await setTabStateEntry(tabId, {
-        status: 'error',
-        error: fallbackError.message,
-        updatedAt: Date.now(),
-      });
-      notifyPopupUpdate(tabId);
-      throw fallbackError;
-    }
+    await setTabStateEntry(tabId, {
+      activeChatKey: patientKey,
+      chatSessions: {
+        [patientKey]: {
+          ...existingSession,
+          status: 'error',
+          messages: conversationMessages,
+          pendingAssistant: null,
+          error: streamError.message || 'OpenAI request failed.',
+          updatedAt: Date.now(),
+        },
+      },
+    });
+    notifyPopupUpdate(tabId);
+    return;
   }
 
-  await setCacheEntry(cacheKey, {
-    result: finalText,
-    contextSummary: payload.contextSummary,
-    promptTemplate: config.prompt,
-    cachedAt: Date.now(),
-  });
+  finalText = finalText.trim();
+
+  if (!finalText) {
+    await setTabStateEntry(tabId, {
+      activeChatKey: patientKey,
+      chatSessions: {
+        [patientKey]: {
+          ...existingSession,
+          status: 'idle',
+          messages: conversationMessages,
+          pendingAssistant: null,
+          error: null,
+          updatedAt: Date.now(),
+        },
+      },
+    });
+    notifyPopupUpdate(tabId);
+    return;
+  }
+
+  const assistantEntry = {
+    role: 'assistant',
+    content: finalText,
+    createdAt: Date.now(),
+  };
+
+  const finalMessages = [...conversationMessages, assistantEntry];
 
   await setTabStateEntry(tabId, {
-    status: 'success',
-    result: finalText,
-    updatedAt: Date.now(),
-    contextSummary: payload.contextSummary,
+    activeChatKey: patientKey,
+    chatSessions: {
+      [patientKey]: {
+        ...existingSession,
+        status: 'idle',
+        messages: finalMessages,
+        pendingAssistant: null,
+        error: null,
+        updatedAt: Date.now(),
+      },
+    },
   });
-  console.log('[CCA][background] OpenAI response stored', { tabId });
   notifyPopupUpdate(tabId);
 }
 
@@ -326,32 +609,23 @@ function buildPrompt(promptTemplate, payload, truncatedDomOverride) {
 
   return `${promptTemplate}\n\n${contextLines.join('\n')}`;
 }
-
-function generateCacheKey({ url, title, contextSummary, truncatedDom, promptTemplate }) {
-  const data = JSON.stringify([url, title, contextSummary, truncatedDom, promptTemplate]);
-  return `cca_${hashString(data)}`;
-}
-
-function hashString(input) {
-  let hash = 0;
-  for (let index = 0; index < input.length; index += 1) {
-    hash = (hash << 5) - hash + input.charCodeAt(index);
-    hash |= 0; // force 32-bit
+async function queryOpenAI({ apiKey, model, prompt, input }) {
+  const requestBody = { model };
+  if (input !== undefined && input !== null) {
+    requestBody.input = input;
+  } else if (prompt !== undefined && prompt !== null) {
+    requestBody.input = prompt;
+  } else {
+    throw new Error('No prompt or input provided for OpenAI request.');
   }
-  return (hash >>> 0).toString(16);
-}
 
-async function queryOpenAI({ apiKey, model, prompt }) {
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model,
-      input: prompt,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
@@ -379,18 +653,23 @@ async function queryOpenAI({ apiKey, model, prompt }) {
   return JSON.stringify(data);
 }
 
-async function streamOpenAI({ apiKey, model, prompt, onDelta }) {
+async function streamOpenAI({ apiKey, model, prompt, input, onDelta }) {
+  const requestBody = { model, stream: true };
+  if (input !== undefined && input !== null) {
+    requestBody.input = input;
+  } else if (prompt !== undefined && prompt !== null) {
+    requestBody.input = prompt;
+  } else {
+    throw new Error('No prompt or input provided for OpenAI streaming request.');
+  }
+
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model,
-      input: prompt,
-      stream: true,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
