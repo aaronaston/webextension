@@ -47,23 +47,38 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function updateUI(state) {
+    const previousScrollTop = analysisText.scrollTop;
+    const previousScrollHeight = analysisText.scrollHeight;
+    const scrollableHeight = Math.max(previousScrollHeight - analysisText.clientHeight, 0);
+    const userWasAtBottom = scrollableHeight <= 0 || scrollableHeight - previousScrollTop <= 16;
+    let contentUpdated = false;
+
     contextSection.classList.add('hidden');
     analysisSection.classList.add('hidden');
     contextText.textContent = '';
-    analysisText.innerHTML = '';
 
     switch (state.status) {
       case 'idle':
         statusEl.textContent = 'Waiting for page analysis.';
+        analysisText.textContent = '';
+        contentUpdated = true;
         break;
       case 'loading':
         statusEl.textContent = 'Analyzing page with OpenAI…';
+        analysisSection.classList.remove('hidden');
+        analysisText.textContent = 'Contacting OpenAI…';
+        contentUpdated = true;
         break;
       case 'needs_api_key':
         statusEl.textContent = state.message || 'Add an OpenAI API key in options.';
+        analysisText.textContent = '';
+        contentUpdated = true;
         break;
       case 'error':
         statusEl.textContent = `Error: ${state.error || 'Unknown error'}`;
+        analysisSection.classList.remove('hidden');
+        analysisText.textContent = state.error || 'Unknown error';
+        contentUpdated = true;
         break;
       case 'streaming':
         statusEl.textContent = 'Generating analysis…';
@@ -74,9 +89,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         analysisSection.classList.remove('hidden');
         if (state.result) {
           renderMarkdown(analysisText, state.result);
-          analysisText.scrollTop = 0;
-        } else {
+          contentUpdated = true;
+        } else if (analysisText.textContent !== 'Waiting for response…') {
           analysisText.textContent = 'Waiting for response…';
+          contentUpdated = true;
         }
         break;
       case 'success':
@@ -88,11 +104,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (state.result) {
           analysisSection.classList.remove('hidden');
           renderMarkdown(analysisText, state.result);
-          analysisText.scrollTop = 0;
+          contentUpdated = true;
+        } else {
+          analysisText.textContent = '';
+          contentUpdated = true;
         }
         break;
       default:
         statusEl.textContent = 'Status unavailable.';
+        analysisText.textContent = '';
+        contentUpdated = true;
+    }
+
+    if (contentUpdated) {
+      requestAnimationFrame(() => {
+        if (state.status === 'streaming' || state.status === 'success') {
+          if (userWasAtBottom) {
+            analysisText.scrollTop = analysisText.scrollHeight;
+          } else {
+            const maxScrollTop = Math.max(analysisText.scrollHeight - analysisText.clientHeight, 0);
+            analysisText.scrollTop = Math.min(previousScrollTop, maxScrollTop);
+          }
+        } else {
+          analysisText.scrollTop = 0;
+        }
+      });
     }
   }
 
