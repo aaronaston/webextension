@@ -1,4 +1,4 @@
-const DEFAULT_PROMPT = `You are a clinical workflow assistant. Summarize the clinical context, identify the active subject (patient, provider, population), and recommend safe next actions while highlighting privacy considerations.`;
+/* global DEFAULT_PROMPT */
 
 function storageGet(keys) {
   return new Promise((resolve, reject) => {

@@ -262,6 +262,7 @@ section {
 .chat-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
 }
 
 .chat-actions button {
@@ -273,6 +274,16 @@ section {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.chat-actions .reset-button {
+  background: #e2e8f0;
+  color: #1f2a44;
+  border: 1px solid #cbd5e1;
+}
+
+.chat-actions .reset-button:hover:not(:disabled) {
+  background: #cbd5e1;
 }
 
 .chat-actions button:disabled {

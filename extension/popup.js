@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const chatForm = document.getElementById('chat-form');
   const chatInput = document.getElementById('chat-input');
   const chatSubmit = document.getElementById('chat-submit');
+  const resetChatBtn = document.getElementById('reset-chat');
   const openOptionsBtn = document.getElementById('open-options');
 
   let activeTabId = null;
@@ -34,6 +35,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   defaultPromptBtn.addEventListener('click', () => {
     sendChatMessage({ useDefault: true });
+  });
+
+  resetChatBtn.addEventListener('click', () => {
+    resetChat();
   });
 
   chatInput.addEventListener('keydown', (event) => {
@@ -66,6 +71,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     chatSubmit.disabled = true;
     chatInput.disabled = true;
     defaultPromptBtn.disabled = true;
+    resetChatBtn.disabled = true;
 
     chrome.runtime.sendMessage(payload, (response) => {
       if (chrome.runtime.lastError) {
@@ -73,6 +79,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         chatSubmit.disabled = false;
         chatInput.disabled = false;
         defaultPromptBtn.disabled = false;
+        resetChatBtn.disabled = false;
         return;
       }
       if (response && response.ok === false && response.error) {
@@ -80,7 +87,43 @@ document.addEventListener('DOMContentLoaded', async () => {
         chatSubmit.disabled = false;
         chatInput.disabled = false;
         defaultPromptBtn.disabled = false;
+        resetChatBtn.disabled = false;
       }
+    });
+  }
+
+  function resetChat() {
+    if (!activeTabId) {
+      statusEl.textContent = 'No active tab detected.';
+      return;
+    }
+
+    chatSubmit.disabled = true;
+    chatInput.disabled = true;
+    defaultPromptBtn.disabled = true;
+    resetChatBtn.disabled = true;
+    statusEl.textContent = 'Resetting chat...';
+
+    chrome.runtime.sendMessage({ type: 'RESET_CHAT', tabId: activeTabId }, (response) => {
+      if (chrome.runtime.lastError) {
+        statusEl.textContent = chrome.runtime.lastError.message;
+        chatSubmit.disabled = false;
+        chatInput.disabled = false;
+        defaultPromptBtn.disabled = false;
+        resetChatBtn.disabled = false;
+        return;
+      }
+
+      if (response && response.ok === false && response.error) {
+        statusEl.textContent = response.error;
+        chatSubmit.disabled = false;
+        chatInput.disabled = false;
+        defaultPromptBtn.disabled = false;
+        resetChatBtn.disabled = false;
+        return;
+      }
+
+      refresh();
     });
   }
 
@@ -289,6 +332,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       chatInput.placeholder = 'Chat unavailable';
       defaultPromptBtn.disabled = true;
       defaultPromptBtn.removeAttribute('title');
+      resetChatBtn.disabled = true;
       return;
     }
 
@@ -306,6 +350,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       defaultPromptBtn.disabled = true;
       defaultPromptBtn.removeAttribute('title');
       chatInput.placeholder = 'Chat unavailable';
+      resetChatBtn.disabled = true;
       return;
     }
 
@@ -324,6 +369,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     chatInput.disabled = disableInput;
     chatSubmit.disabled = disableInput;
     defaultPromptBtn.disabled = disableInput;
+    const hasChatHistory = chatState.messages.length > 0
+      || Boolean(chatState.pendingAssistant)
+      || (chatState.status === 'error' && chatState.error);
+    resetChatBtn.disabled = disableInput || !hasChatHistory;
 
     const wasAtBottom = chatLog.scrollHeight - chatLog.clientHeight - chatLog.scrollTop <= 16;
     chatLog.innerHTML = '';

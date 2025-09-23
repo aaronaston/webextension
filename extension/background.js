@@ -1,4 +1,3 @@
-const DEFAULT_PROMPT = `You are a clinical workflow assistant. Use the provided DOM snapshot and page metadata to summarize the current clinical context (patient charts, schedules, etc.) and suggest next-step actions. Highlight any detected PHI handling considerations.`;
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const MAX_DOM_CHARS = 4000;
 
@@ -269,6 +268,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ status: 'error', error: error.message });
     });
     return true; // async sendResponse
+  }
+
+  if (message?.type === 'RESET_CHAT') {
+    const targetTabId = tabId || message.tabId;
+    if (!targetTabId) {
+      sendResponse({ ok: false, error: 'Unable to determine active tab.' });
+      return false;
+    }
+
+    (async () => {
+      try {
+        await resetChatState(targetTabId);
+        sendResponse({ ok: true });
+      } catch (error) {
+        console.error('[CCA][background] Failed to reset chat state', error);
+        sendResponse({ ok: false, error: error.message });
+      }
+    })();
+
+    return true;
   }
 
   if (message?.type === 'CHAT_REQUEST') {
@@ -562,6 +581,43 @@ Assistant:`;
       },
     },
   });
+  notifyPopupUpdate(tabId);
+}
+
+async function resetChatState(tabId) {
+  const state = await getTabStateEntry(tabId);
+  const updates = {
+    message: '',
+    result: '',
+    updatedAt: null,
+    status: state.isEmr ? 'ready' : 'idle',
+  };
+
+  if (!state.isEmr) {
+    updates.activeChatKey = null;
+    await setTabStateEntry(tabId, updates);
+    notifyPopupUpdate(tabId);
+    return;
+  }
+
+  const sessionUpdates = {};
+  const existingSessions = state.chatSessions || {};
+  Object.keys(existingSessions).forEach((key) => {
+    sessionUpdates[key] = defaultChatState();
+  });
+
+  if (state.patientKey) {
+    sessionUpdates[state.patientKey] = defaultChatState();
+    updates.activeChatKey = state.patientKey;
+  } else {
+    updates.activeChatKey = null;
+  }
+
+  if (Object.keys(sessionUpdates).length > 0) {
+    updates.chatSessions = sessionUpdates;
+  }
+
+  await setTabStateEntry(tabId, updates);
   notifyPopupUpdate(tabId);
 }
 
