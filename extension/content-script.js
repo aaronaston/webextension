@@ -39,8 +39,15 @@ function collectContext(reason) {
     domLength: domText.length,
     isEmr: contextInfo.isEmr,
   });
-  const patientKey = createPatientKey({ title, domText });
   const patientLabel = contextInfo.patientLabel || title;
+  const chartFingerprint = createChartFingerprint({ url: window.location.href, title, domText });
+  const patientKeys = createPatientKeys({
+    title,
+    domText,
+    patientLabel,
+    url: window.location.href,
+    chartFingerprint,
+  });
   return {
     url: window.location.href,
     title,
@@ -48,8 +55,10 @@ function collectContext(reason) {
     reason,
     contextSummary: contextInfo.summary,
     isEmr: contextInfo.isEmr,
-    patientKey,
+    patientKey: patientKeys.patientKey,
+    patientIdentityKey: patientKeys.patientIdentityKey,
     patientLabel,
+    chartFingerprint,
   };
 }
 
@@ -118,9 +127,79 @@ function detectClinicalContext({ title, domText }) {
   };
 }
 
-function createPatientKey({ title, domText }) {
-  const snippet = `${title}\n${domText.slice(0, 500)}`;
-  return `patient_${hashString(snippet)}`;
+function createPatientKeys({ title, domText, patientLabel, url, chartFingerprint }) {
+  const identity = derivePatientIdentity({ title, domText, patientLabel, url });
+  const patientIdentityKey = `patient_${hashString(identity)}`;
+  const stableChartFingerprint = chartFingerprint || hashString(`${title}\n${domText.slice(0, 2000)}`);
+  const patientKey = `${patientIdentityKey}::${stableChartFingerprint}`;
+
+  return {
+    patientIdentityKey,
+    patientKey,
+  };
+}
+
+function derivePatientIdentity({ title, domText, patientLabel, url }) {
+  const identityParts = [];
+  const normalizedLabel = (patientLabel || '').trim().toLowerCase();
+  if (normalizedLabel) {
+    identityParts.push(normalizedLabel);
+  }
+
+  const idMatch = domText.match(/(?:mrn|patient\s*(?:id|number)|chart\s*(?:id|number))[:#\s-]*([A-Z0-9-]+)/i);
+  if (idMatch && idMatch[1]) {
+    identityParts.push(idMatch[1].trim().toLowerCase());
+  }
+
+  const dobMatch = domText.match(/(?:dob|date\s*of\s*birth)[:#\s-]*([0-9/\-]+)/i);
+  if (dobMatch && dobMatch[1]) {
+    identityParts.push(dobMatch[1].trim().toLowerCase());
+  }
+
+  const chartIdMatch = domText.match(/chart\s*(?:id|number)[:#\s-]*([A-Z0-9-]+)/i);
+  if (chartIdMatch && chartIdMatch[1]) {
+    identityParts.push(chartIdMatch[1].trim().toLowerCase());
+  }
+
+  const uniqueNumberMatch = domText.match(/(?:visit|encounter|account)\s*(?:id|number)[:#\s-]*([A-Z0-9-]+)/i);
+  if (uniqueNumberMatch && uniqueNumberMatch[1]) {
+    identityParts.push(uniqueNumberMatch[1].trim().toLowerCase());
+  }
+
+  const firstNameMatch = domText.match(/\b([A-Z][a-z]+\s+[A-Z][A-Za-z'.-]+)\b/);
+  if (firstNameMatch && firstNameMatch[1]) {
+    identityParts.push(firstNameMatch[1].trim().toLowerCase());
+  }
+
+  if (identityParts.length === 0) {
+    const fallback = `${title}\n${domText.slice(0, 200)}`.trim().toLowerCase();
+    if (fallback) {
+      identityParts.push(fallback);
+    }
+  }
+
+  if (url) {
+    try {
+      const hostname = new URL(url).hostname.toLowerCase();
+      if (hostname) {
+        identityParts.push(hostname);
+      }
+    } catch (error) {
+      console.warn('[CCA][content] Unable to parse URL when deriving patient identity', error);
+    }
+  }
+
+  const uniqueParts = identityParts
+    .map((part) => part && part.trim())
+    .filter(Boolean);
+  const deduped = Array.from(new Set(uniqueParts));
+
+  return deduped.join('|') || 'unknown_patient';
+}
+
+function createChartFingerprint({ url, title, domText }) {
+  const snippet = `${url || ''}\n${title || ''}\n${domText.slice(0, 2000)}`;
+  return hashString(snippet);
 }
 
 function hashString(input) {

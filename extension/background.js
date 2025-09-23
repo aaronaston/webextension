@@ -13,6 +13,7 @@ function defaultChatState() {
     pendingAssistant: null,
     error: null,
     updatedAt: null,
+    chartFingerprint: null,
   };
 }
 
@@ -31,6 +32,7 @@ function defaultTabState() {
     model: DEFAULT_MODEL,
     lastContext: null,
     patientKey: null,
+    patientIdentityKey: null,
     patientLabel: '',
     message: '',
     detectionHeader: '',
@@ -75,6 +77,9 @@ function normalizeTabState(state) {
     ? normalized.detectionHeaderStatus
     : 'idle';
   normalized.promptChips = normalizePromptChips(normalized.promptChips);
+  normalized.patientIdentityKey = typeof normalized.patientIdentityKey === 'string'
+    ? normalized.patientIdentityKey
+    : null;
   return normalized;
 }
 
@@ -100,6 +105,9 @@ function normalizeChatState(chatState) {
     messages: Array.isArray(chatState.messages) ? [...chatState.messages] : [],
     pendingAssistant: chatState.pendingAssistant || null,
     error: chatState.error || null,
+    chartFingerprint: typeof chatState.chartFingerprint === 'string'
+      ? chatState.chartFingerprint
+      : null,
   };
 }
 
@@ -411,14 +419,38 @@ async function handlePageContext(tabId, payload) {
   const config = await loadConfig(payload.url);
   const truncatedDom = payload.dom.slice(0, MAX_DOM_CHARS);
   const now = Date.now();
-  const contextChanged = Boolean(
-    prevState.lastContext
-      && (prevState.lastContext.url !== payload.url
-        || prevState.lastContext.title !== payload.title
-        || prevState.lastContext.contextSummary !== payload.contextSummary)
-  );
+  const computedFingerprint = hashString([
+    payload.url || '',
+    payload.title || '',
+    payload.contextSummary || '',
+    truncatedDom.slice(0, 1000),
+  ].join('::'));
+  const chartFingerprint = typeof payload.chartFingerprint === 'string' && payload.chartFingerprint
+    ? payload.chartFingerprint
+    : computedFingerprint;
+  let patientIdentityKey = typeof payload.patientIdentityKey === 'string' && payload.patientIdentityKey
+    ? payload.patientIdentityKey
+    : null;
+  let patientKey = typeof payload.patientKey === 'string' && payload.patientKey
+    ? payload.patientKey
+    : '';
+  const legacyPatientKey = patientKey && !patientKey.includes('::') ? patientKey : null;
 
-  const patientKey = payload.patientKey || `${payload.url}#${payload.title}`;
+  if (!patientIdentityKey) {
+    if (patientKey && patientKey.includes('::')) {
+      patientIdentityKey = patientKey.split('::')[0] || null;
+    } else if (legacyPatientKey) {
+      patientIdentityKey = legacyPatientKey;
+    } else {
+      patientIdentityKey = `patient_${hashString(`${payload.url || ''}::${payload.title || ''}`)}`;
+    }
+  }
+
+  if (!patientKey) {
+    patientKey = `${patientIdentityKey}::${chartFingerprint}`;
+  } else if (legacyPatientKey) {
+    patientKey = `${legacyPatientKey}::${chartFingerprint}`;
+  }
   const patientLabel = payload.patientLabel || payload.title || 'Current chart';
   const defaultPromptText = config.prompt || SYSTEM_PROMPT;
   const defaultPromptLabel = summarizePromptLabel(defaultPromptText);
@@ -440,8 +472,10 @@ async function handlePageContext(tabId, payload) {
       reason: payload.reason,
       contextSummary: payload.contextSummary,
       dom: truncatedDom,
+      chartFingerprint,
     },
     patientKey,
+    patientIdentityKey,
     patientLabel,
   };
   updates.detectionHeader = '';
@@ -454,6 +488,7 @@ async function handlePageContext(tabId, payload) {
     updates.isEmr = false;
     updates.message = 'No EMR detected on this page.';
     updates.patientKey = null;
+    updates.patientIdentityKey = null;
     updates.patientLabel = '';
     updates.activeChatKey = null;
     await setTabStateEntry(tabId, updates);
@@ -471,7 +506,9 @@ async function handlePageContext(tabId, payload) {
     updates.detectionHeader = '';
     updates.detectionHeaderStatus = 'error';
     if (!prevState.chatSessions?.[patientKey]) {
-      updates.chatSessions = { [patientKey]: defaultChatState() };
+      const blockedSession = defaultChatState();
+      blockedSession.chartFingerprint = chartFingerprint;
+      updates.chatSessions = { [patientKey]: blockedSession };
     }
     await setTabStateEntry(tabId, updates);
     notifyPopupUpdate(tabId);
@@ -485,31 +522,54 @@ async function handlePageContext(tabId, payload) {
   updates.message = '';
   updates.activeChatKey = patientKey;
 
-  if (!prevState.chatSessions?.[patientKey]) {
-    updates.chatSessions = { [patientKey]: defaultChatState() };
+  let existingSession = prevState.chatSessions?.[patientKey]
+    ? normalizeChatState(prevState.chatSessions[patientKey])
+    : null;
+
+  if (!existingSession && legacyPatientKey && prevState.chatSessions?.[legacyPatientKey]) {
+    existingSession = normalizeChatState(prevState.chatSessions[legacyPatientKey]);
   }
 
-  if (contextChanged && prevState.chatSessions?.[patientKey]) {
-    const restoredSession = normalizeChatState(prevState.chatSessions[patientKey]);
-    updates.chatSessions = {
-      ...(updates.chatSessions || {}),
-      [patientKey]: {
-        ...restoredSession,
-        status: 'idle',
-        pendingAssistant: null,
-        error: null,
-      },
+  if (!existingSession) {
+    const initialSession = defaultChatState();
+    initialSession.chartFingerprint = chartFingerprint;
+    updates.chatSessions = { [patientKey]: initialSession };
+  } else {
+    const needsReset = existingSession.chartFingerprint
+      && existingSession.chartFingerprint !== chartFingerprint;
+
+    if (needsReset) {
+      const resetSession = defaultChatState();
+      resetSession.chartFingerprint = chartFingerprint;
+      updates.chatSessions = {
+        ...(updates.chatSessions || {}),
+        [patientKey]: resetSession,
+      };
+    } else {
+      updates.chatSessions = {
+        ...(updates.chatSessions || {}),
+        [patientKey]: {
+          ...existingSession,
+          chartFingerprint,
+          status: existingSession.status === 'streaming' ? existingSession.status : 'idle',
+          pendingAssistant: existingSession.status === 'streaming' ? existingSession.pendingAssistant : null,
+          error: existingSession.status === 'streaming' ? existingSession.error : null,
+        },
+      };
+    }
+  }
+
+  headerFingerprint = chartFingerprint || computedFingerprint;
+
+  let prevHeaderEntry = prevState.patientHeaders?.[patientKey];
+  if (!prevHeaderEntry && legacyPatientKey && prevState.patientHeaders?.[legacyPatientKey]) {
+    prevHeaderEntry = normalizePatientHeaderEntry(prevState.patientHeaders[legacyPatientKey]);
+    updates.patientHeaders = {
+      ...(updates.patientHeaders || {}),
+      [patientKey]: prevHeaderEntry,
+      ...(legacyPatientKey ? { [legacyPatientKey]: null } : {}),
     };
   }
-
-  headerFingerprint = hashString([
-    payload.url || '',
-    payload.title || '',
-    payload.contextSummary || '',
-    truncatedDom.slice(0, 1000),
-  ].join('::'));
-
-  const prevHeaderEntry = prevState.patientHeaders?.[patientKey];
   pendingKey = `${tabId}:${patientKey}`;
   const existingPendingFingerprint = pendingHeaderRequests.get(pendingKey);
   const hasMatchingPendingRequest = existingPendingFingerprint === headerFingerprint;
@@ -921,11 +981,17 @@ async function resetChatState(tabId) {
   const sessionUpdates = {};
   const existingSessions = state.chatSessions || {};
   Object.keys(existingSessions).forEach((key) => {
-    sessionUpdates[key] = defaultChatState();
+    const normalizedSession = normalizeChatState(existingSessions[key]);
+    const resetSession = defaultChatState();
+    resetSession.chartFingerprint = normalizedSession.chartFingerprint;
+    sessionUpdates[key] = resetSession;
   });
 
   if (state.patientKey) {
-    sessionUpdates[state.patientKey] = defaultChatState();
+    const activeNormalized = normalizeChatState(existingSessions[state.patientKey]);
+    const activeReset = defaultChatState();
+    activeReset.chartFingerprint = activeNormalized.chartFingerprint;
+    sessionUpdates[state.patientKey] = activeReset;
     updates.activeChatKey = state.patientKey;
   } else {
     updates.activeChatKey = null;

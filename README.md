@@ -6,7 +6,8 @@ This repository contains a Manifest V2 browser extension that monitors clinical 
 
 - Observes DOM updates with a debounced content script and flags likely EMR pages using lightweight heuristics (patient identifiers, scheduling keywords, vitals, etc.).
 - Captures a trimmed DOM snapshot (up to 4,000 characters) and sends it to the background page, which stores context metadata and persists chat state per patient.
-- Generates a three-line patient header by calling the OpenAI `/v1/responses` endpoint with a purpose-built prompt and caches the result per tab/patient fingerprint.
+- Generates a three-line patient header by calling the OpenAI `/v1/responses` endpoint with a purpose-built prompt; the first time a patient is selected the header is created and then reused from cache on later selections unless the chart fingerprint changes.
+- Restores chat sessions and patient headers from a per-patient chart cache (identity key + chart fingerprint) so revisiting the same chart rehydrates instantly, while chart changes trigger a fresh cache entry.
 - Provides a popup UI that surfaces page-detection status, the cached patient header, the context summary, and a multi-turn chat interface with streaming updates.
 - Offers predefined prompt chips and a "use default prompt" shortcut so clinicians can quickly re-run common analyses.
 - Lets users configure an OpenAI API key, a default model, a default prompt, and per-host overrides through the options page; settings are stored in `chrome.storage.local` only.
@@ -66,7 +67,8 @@ Additional context and requirements live in `docs/requirements.md`.
 - **Context throttling:** `content-script.js` debounces DOM updates by 1.5 seconds and deduplicates payloads using a hash of the title, summary, and first 2,000 characters.
 - **Payload limits:** `background.js` trims DOM text to `MAX_DOM_CHARS` (4,000) before sending it to OpenAI; adjust carefully to stay within request size limits.
 - **Chat streaming:** The assistant chat uses the OpenAI `/v1/responses` streaming API. Partial deltas update the popup UI while the request is in-flight, and errors reset the chat session state.
-- **Patient headers:** The background script fingerprints chart content and caches three-line Markdown headers by patient key to avoid unnecessary repeat calls.
+- **Patient headers:** The background script fingerprints chart content and caches three-line Markdown headers by patient key so a previously selected patient reuses the cached header unless the chart fingerprint changes.
+- **Patient identity + chart fingerprints:** The content script derives a stable `patientIdentityKey` (using detected patient labels/identifiers) and pairs it with a chart fingerprint to form a chart-specific `patientKey`. The background state uses this composite key to cache patient headers and chats so the popup reloads instantly for an unchanged chart but resets automatically when the chart content changes.
 - **Storage:** Tab/chat state is persisted in `chrome.storage.local` so closing the popup does not lose progress. API credentials and per-site settings live under the `openAI` key.
 - **Logging:** Console logs are prefixed with `[CCA]` for quick filtering. Avoid adding verbose logging that could leak PHI.
 
@@ -85,4 +87,3 @@ Manual verification is currently required:
 - The EMR detection heuristics rely on simple keyword matches and can misclassify complex layouts; strengthen them before deploying widely.
 - No in-page overlay is injected yet. All insights surface through the popup.
 - Privacy guardrails depend on prompt discipline and the OpenAI processing pipeline; review institutional requirements before handling real PHI.
-

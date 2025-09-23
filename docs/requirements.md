@@ -12,6 +12,7 @@
   - Provide configurable prompts/models per hostname stored locally in `chrome.storage.local`.
   - Surface AI output through the extension popup: patient header, context summary, streaming chat, and quick prompt chips.
   - Persist tab + chat state so clinicians can revisit charts and continue conversations.
+  - Cache patient headers and chat sessions per patient identity so revisiting a chart reuses cached data unless the underlying chart fingerprint changes.
 - **Non-Goals (Current Release)**
   - Building server-side services beyond OpenAI.
   - Mobile or tablet optimization.
@@ -40,7 +41,9 @@
 ## 5. Context Detection Requirements
 - **Inputs:** Document title, the first ~2,000 text nodes, URL hostname.
 - **Heuristics:** Keyword matches for `patient`, `MRN`, `schedule`, `medication`, `vitals`, `labs`, etc. Title parsing and regex extraction provide a `patientLabel` hint.
-- **Patient Fingerprint:** Hash of title + DOM snippet to distinguish patient charts and scope chat sessions.
+- **Patient Identity Key:** Stable hash derived from detected patient labels and identifiers to scope chat sessions per patient.
+- **Chart Fingerprint:** Hash of URL/title/DOM excerpt to detect when chart content changes and decide whether cached headers/chat should be reused or refreshed.
+- **Patient Key:** Composite `patientIdentityKey::chartFingerprint` used by the background script to cache patient headers and chat sessions per chart version.
 - **Triggers:** Initial load, DOMContentLoaded if needed, and any MutationObserver events (debounced).
 - **Future Improvements:** Expand selector-based detection, allow per-site overrides, and add PHI redaction hooks.
 
