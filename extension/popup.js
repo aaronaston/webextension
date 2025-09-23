@@ -192,6 +192,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       message: state.message || '',
       error: state.error || '',
       isEmr: Boolean(state.isEmr),
+      detectionHeader: typeof state.detectionHeader === 'string' ? state.detectionHeader : '',
+      detectionHeaderStatus: ['idle', 'pending', 'ready', 'error'].includes(state.detectionHeaderStatus)
+        ? state.detectionHeaderStatus
+        : 'idle',
       defaultPromptLabel: state.defaultPromptLabel || '',
       defaultPrompt: state.defaultPrompt || '',
       promptChips: Array.isArray(state.promptChips) ? state.promptChips : [],
@@ -226,6 +230,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function renderDetection(state) {
     detectionBadge.classList.remove('emr', 'not-emr');
+    detectionMessage.innerHTML = '';
+    detectionMessage.textContent = '';
     if (!state.isEmr) {
       detectionBadge.textContent = 'No EMR detected';
       detectionBadge.classList.add('not-emr');
@@ -237,7 +243,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (state.status === 'needs_api_key') {
         detectionMessage.textContent = 'Add an OpenAI API key in options to enable chat.';
       } else {
-        detectionMessage.textContent = `Chat with ${label} using the form below.`;
+        const headerStatus = state.detectionHeaderStatus || 'idle';
+        if (headerStatus === 'ready' && state.detectionHeader) {
+          renderMarkdown(detectionMessage, state.detectionHeader);
+        } else if (headerStatus === 'pending') {
+          detectionMessage.textContent = 'Summarizing patient details…';
+        } else if (headerStatus === 'error') {
+          detectionMessage.textContent = state.message
+            ? state.message
+            : `Unable to summarize patient details. Chat with ${label} using the form below.`;
+        } else {
+          detectionMessage.textContent = `Chat with ${label} using the form below.`;
+        }
       }
     }
   }

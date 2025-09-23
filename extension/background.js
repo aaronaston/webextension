@@ -3,6 +3,7 @@ const MAX_DOM_CHARS = 4000;
 
 const tabState = new Map();
 let tabStateReady = loadTabStateFromStorage();
+const pendingHeaderRequests = new Map();
 
 
 function defaultChatState() {
@@ -32,6 +33,9 @@ function defaultTabState() {
     patientKey: null,
     patientLabel: '',
     message: '',
+    detectionHeader: '',
+    detectionHeaderStatus: 'idle',
+    patientHeaders: {},
     promptChips: normalizePromptChips(promptChips),
   };
 }
@@ -63,6 +67,13 @@ function normalizeTabState(state) {
   }
   normalized.activeChatKey = activeKey;
   normalized.chat = normalizeChatState(activeKey ? sessions[activeKey] : defaultChatState());
+  normalized.patientHeaders = normalizePatientHeaders(normalized.patientHeaders);
+  normalized.detectionHeader = typeof normalized.detectionHeader === 'string'
+    ? normalized.detectionHeader
+    : '';
+  normalized.detectionHeaderStatus = PATIENT_HEADER_STATUS_VALUES.includes(normalized.detectionHeaderStatus)
+    ? normalized.detectionHeaderStatus
+    : 'idle';
   normalized.promptChips = normalizePromptChips(normalized.promptChips);
   return normalized;
 }
@@ -103,6 +114,44 @@ function normalizePromptChips(chips) {
       prompt: typeof chip.prompt === 'string' ? chip.prompt : '',
     }))
     .filter((chip) => chip.label && chip.prompt);
+}
+
+const PATIENT_HEADER_STATUS_VALUES = ['idle', 'pending', 'ready', 'error'];
+
+function normalizePatientHeaderEntry(entry) {
+  const base = {
+    text: '',
+    status: 'idle',
+    updatedAt: null,
+    error: '',
+    fingerprint: '',
+  };
+  if (!entry || typeof entry !== 'object') {
+    return base;
+  }
+
+  const status = typeof entry.status === 'string' && PATIENT_HEADER_STATUS_VALUES.includes(entry.status)
+    ? entry.status
+    : 'idle';
+
+  return {
+    text: typeof entry.text === 'string' ? entry.text : '',
+    status,
+    updatedAt: typeof entry.updatedAt === 'number' ? entry.updatedAt : null,
+    error: typeof entry.error === 'string' ? entry.error : '',
+    fingerprint: typeof entry.fingerprint === 'string' ? entry.fingerprint : '',
+  };
+}
+
+function normalizePatientHeaders(headers) {
+  if (!headers || typeof headers !== 'object') {
+    return {};
+  }
+  const normalized = {};
+  Object.entries(headers).forEach(([key, entry]) => {
+    normalized[key] = normalizePatientHeaderEntry(entry);
+  });
+  return normalized;
 }
 
 function storageGet(keys) {
@@ -188,6 +237,18 @@ async function setTabStateEntry(tabId, updates, options = {}) {
           next.chatSessions = mergedSessions;
           break;
         }
+        case 'patientHeaders': {
+          const mergedHeaders = { ...current.patientHeaders };
+          Object.entries(value || {}).forEach(([headerKey, headerValue]) => {
+            if (headerValue === null) {
+              delete mergedHeaders[headerKey];
+            } else {
+              mergedHeaders[headerKey] = normalizePatientHeaderEntry(headerValue);
+            }
+          });
+          next.patientHeaders = mergedHeaders;
+          break;
+        }
         case 'activeChatKey':
           next.activeChatKey = value;
           break;
@@ -220,6 +281,7 @@ async function setTabStateEntry(tabId, updates, options = {}) {
     next.chatSessions[activeKey] = activeChat;
   }
   next.chat = activeChat;
+  next.patientHeaders = normalizePatientHeaders(next.patientHeaders);
 
   tabState.set(tabId, next);
   if (!skipPersist) {
@@ -360,6 +422,10 @@ async function handlePageContext(tabId, payload) {
   const patientLabel = payload.patientLabel || payload.title || 'Current chart';
   const defaultPromptText = config.prompt || SYSTEM_PROMPT;
   const defaultPromptLabel = summarizePromptLabel(defaultPromptText);
+  let shouldGenerateHeader = false;
+  let headerFingerprint = '';
+  let headerEntryUpdates = null;
+  let pendingKey = '';
 
   const updates = {
     isEmr: Boolean(payload.isEmr),
@@ -378,6 +444,8 @@ async function handlePageContext(tabId, payload) {
     patientKey,
     patientLabel,
   };
+  updates.detectionHeader = '';
+  updates.detectionHeaderStatus = 'idle';
 
   if (!payload.isEmr) {
     updates.status = 'no_emr';
@@ -400,6 +468,8 @@ async function handlePageContext(tabId, payload) {
     updates.isEmr = true;
     updates.message = 'Add an OpenAI API key in options to enable chat.';
     updates.activeChatKey = patientKey;
+    updates.detectionHeader = '';
+    updates.detectionHeaderStatus = 'error';
     if (!prevState.chatSessions?.[patientKey]) {
       updates.chatSessions = { [patientKey]: defaultChatState() };
     }
@@ -432,8 +502,251 @@ async function handlePageContext(tabId, payload) {
     };
   }
 
+  headerFingerprint = hashString([
+    payload.url || '',
+    payload.title || '',
+    payload.contextSummary || '',
+    truncatedDom.slice(0, 1000),
+  ].join('::'));
+
+  const prevHeaderEntry = prevState.patientHeaders?.[patientKey];
+  pendingKey = `${tabId}:${patientKey}`;
+  const existingPendingFingerprint = pendingHeaderRequests.get(pendingKey);
+  const hasMatchingPendingRequest = existingPendingFingerprint === headerFingerprint;
+  let detectionHeader = '';
+  let detectionHeaderStatus = 'pending';
+  shouldGenerateHeader = false;
+  headerEntryUpdates = null;
+
+  if (prevHeaderEntry && prevHeaderEntry.fingerprint === headerFingerprint) {
+    if (prevHeaderEntry.status === 'ready' && prevHeaderEntry.text) {
+      detectionHeader = prevHeaderEntry.text;
+      detectionHeaderStatus = 'ready';
+    } else if (prevHeaderEntry.status === 'pending') {
+      detectionHeaderStatus = 'pending';
+      shouldGenerateHeader = !hasMatchingPendingRequest;
+    } else if (prevHeaderEntry.status === 'error') {
+      shouldGenerateHeader = true;
+    } else {
+      shouldGenerateHeader = true;
+    }
+  } else {
+    shouldGenerateHeader = true;
+  }
+
+  if (shouldGenerateHeader) {
+    detectionHeader = '';
+    detectionHeaderStatus = 'pending';
+    headerEntryUpdates = {
+      [patientKey]: {
+        text: '',
+        status: 'pending',
+        error: '',
+        fingerprint: headerFingerprint,
+        updatedAt: now,
+      },
+    };
+  } else if (prevHeaderEntry && prevHeaderEntry.status === 'error') {
+    detectionHeaderStatus = 'error';
+    detectionHeader = '';
+  }
+
+  updates.detectionHeader = detectionHeader;
+  updates.detectionHeaderStatus = detectionHeaderStatus;
+
+  if (headerEntryUpdates) {
+    updates.patientHeaders = {
+      ...(updates.patientHeaders || {}),
+      ...headerEntryUpdates,
+    };
+  }
+
   await setTabStateEntry(tabId, updates);
   notifyPopupUpdate(tabId);
+
+  if (shouldGenerateHeader) {
+    pendingHeaderRequests.set(pendingKey, headerFingerprint);
+    generatePatientHeader({
+      tabId,
+      patientKey,
+      payload,
+      config,
+      fingerprint: headerFingerprint,
+      pendingKey,
+      truncatedDom,
+    }).catch((error) => {
+      console.error('[CCA][background] Failed to generate patient header', error);
+      const currentPendingFingerprint = pendingHeaderRequests.get(pendingKey);
+      if (currentPendingFingerprint === headerFingerprint) {
+        pendingHeaderRequests.delete(pendingKey);
+      }
+    });
+  }
+}
+
+async function generatePatientHeader({ tabId, patientKey, payload, config, fingerprint, pendingKey, truncatedDom }) {
+  const currentFingerprint = pendingHeaderRequests.get(pendingKey);
+  if (currentFingerprint !== fingerprint) {
+    return;
+  }
+
+  const prompt = buildPatientHeaderPrompt({
+    payload,
+    truncatedDom,
+    currentDate: new Date(),
+  });
+  const model = config.model || DEFAULT_MODEL;
+
+  try {
+    const responseText = await queryOpenAI({
+      apiKey: config.apiKey,
+      model,
+      prompt,
+    });
+
+    if (pendingHeaderRequests.get(pendingKey) !== fingerprint) {
+      return;
+    }
+
+    const normalizedHeader = normalizeHeaderMarkdown(responseText);
+    const status = normalizedHeader ? 'ready' : 'error';
+    const errorMessage = normalizedHeader ? '' : 'No header generated.';
+
+    await setTabStateEntry(tabId, {
+      detectionHeader: normalizedHeader,
+      detectionHeaderStatus: status,
+      patientHeaders: {
+        [patientKey]: {
+          text: normalizedHeader,
+          status,
+          error: errorMessage,
+          fingerprint,
+          updatedAt: Date.now(),
+        },
+      },
+    });
+
+    notifyPopupUpdate(tabId);
+  } catch (error) {
+    if (pendingHeaderRequests.get(pendingKey) !== fingerprint) {
+      throw error;
+    }
+
+    await setTabStateEntry(tabId, {
+      detectionHeader: '',
+      detectionHeaderStatus: 'error',
+      patientHeaders: {
+        [patientKey]: {
+          text: '',
+          status: 'error',
+          error: error.message || 'Failed to generate header.',
+          fingerprint,
+          updatedAt: Date.now(),
+        },
+      },
+    });
+
+    notifyPopupUpdate(tabId);
+    throw error;
+  } finally {
+    const activeFingerprint = pendingHeaderRequests.get(pendingKey);
+    if (activeFingerprint === fingerprint) {
+      pendingHeaderRequests.delete(pendingKey);
+    }
+  }
+}
+
+function buildPatientHeaderPrompt({ payload, truncatedDom, currentDate }) {
+  const isoDate = formatIsoDate(currentDate);
+  const excerpt = typeof truncatedDom === 'string'
+    ? truncatedDom
+    : (payload.dom || '').slice(0, MAX_DOM_CHARS);
+  const safeExcerpt = excerpt || 'No DOM text captured.';
+  const summary = payload.contextSummary || 'Not provided';
+  const patientHint = payload.patientLabel ? `Patient label hint: ${payload.patientLabel}` : '';
+
+  const instructions = [
+    'You are a clinical documentation assistant reviewing an electronic medical record (EMR).',
+    'Identify the patient who is the subject of the chart and assemble a concise three-line Markdown header.',
+    'Only use information explicitly present in the supplied context. If a field is missing, write "Unknown" or "Not documented".',
+    'Compute age relative to the current date when a full DOB is available; otherwise use "Unknown".',
+    'Prefer the clearest identifiers (e.g., MRN, chart number) and primary contact details (phone, email).',
+    'Respond with exactly three Markdown lines and no other commentary or code fences.',
+    'Line 1: **Patient:** <Full name> (<Identifier list or "None">)',
+    'Line 2: **DOB:** <YYYY-MM-DD or best available> (Age <## or "Unknown">, <Gender or "Unknown">)',
+    'Line 3: **Primary Contact:** <Key contact method or "Not documented">',
+    'Do not include the words "Line 1", numbers, bullet markers, or any explanations in the output.',
+  ];
+
+  const contextLines = [
+    `Current date: ${isoDate}`,
+    `Page title: ${payload.title || 'Untitled'}`,
+    `Page URL: ${payload.url || 'unknown'}`,
+    `Detected context summary: ${summary}`,
+  ];
+
+  if (patientHint) {
+    contextLines.push(patientHint);
+  }
+
+  contextLines.push('Document excerpt:');
+  contextLines.push(safeExcerpt);
+
+  return `${instructions.join('\n')}\n\n${contextLines.join('\n')}`;
+}
+
+function normalizeHeaderMarkdown(raw) {
+  if (!raw) {
+    return '';
+  }
+  let text = String(raw).trim();
+  if (!text) {
+    return '';
+  }
+  text = text.replace(/^```(?:markdown)?/i, '').replace(/```$/i, '').trim();
+  const lines = text.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    return '';
+  }
+
+  const cleanedLines = [];
+  for (let index = 0; index < lines.length && cleanedLines.length < 3; index += 1) {
+    let line = lines[index]
+      .replace(/^Line\s*\d+\s*[:\-]\s*/i, '')
+      .replace(/^\d+\.\s*/, '')
+      .replace(/^[-*+]\s*/, '')
+      .replace(/^(?:Output|Response|Patient Header)\s*[:\-]\s*/i, '')
+      .trim();
+    if (line) {
+      cleanedLines.push(line);
+    }
+  }
+
+  return cleanedLines.slice(0, 3).join('\n\n');
+}
+
+function formatIsoDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().split('T')[0];
+  }
+  const now = new Date();
+  return now.toISOString().split('T')[0];
+}
+
+function hashString(input) {
+  if (!input) {
+    return '0';
+  }
+  let hash = 0;
+  const source = String(input);
+  for (let index = 0; index < source.length; index += 1) {
+    hash = (hash << 5) - hash + source.charCodeAt(index);
+    hash |= 0; // eslint-disable-line no-bitwise
+  }
+  return (hash >>> 0).toString(16);
 }
 
 async function handleChatRequest(tabId, message) {
