@@ -8,7 +8,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const detectionMessage = document.getElementById('detection-message');
   const chatSection = document.getElementById('chat');
   const chatControls = document.getElementById('chat-controls');
-  const defaultPromptBtn = document.getElementById('default-prompt-btn');
   const chatLog = document.getElementById('chat-log');
   const chatForm = document.getElementById('chat-form');
   const chatInput = document.getElementById('chat-input');
@@ -33,8 +32,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     sendChatMessage({ text: message });
   });
 
-  defaultPromptBtn.addEventListener('click', () => {
-    sendChatMessage({ useDefault: true });
+  chatControls.addEventListener('click', (event) => {
+    const target = event.target.closest('button[data-prompt-chip]');
+    if (!target || target.disabled) {
+      return;
+    }
+    event.preventDefault();
+    const presetPrompt = target.getAttribute('data-prompt') || '';
+    chatInput.value = presetPrompt;
+    chatInput.focus();
+    chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
   });
 
   resetChatBtn.addEventListener('click', () => {
@@ -70,7 +77,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     chatSubmit.disabled = true;
     chatInput.disabled = true;
-    defaultPromptBtn.disabled = true;
+    setChipButtonsDisabled(true);
     resetChatBtn.disabled = true;
 
     chrome.runtime.sendMessage(payload, (response) => {
@@ -78,7 +85,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusEl.textContent = chrome.runtime.lastError.message;
         chatSubmit.disabled = false;
         chatInput.disabled = false;
-        defaultPromptBtn.disabled = false;
+        setChipButtonsDisabled(false);
         resetChatBtn.disabled = false;
         return;
       }
@@ -86,7 +93,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusEl.textContent = response.error;
         chatSubmit.disabled = false;
         chatInput.disabled = false;
-        defaultPromptBtn.disabled = false;
+        setChipButtonsDisabled(false);
         resetChatBtn.disabled = false;
       }
     });
@@ -100,7 +107,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     chatSubmit.disabled = true;
     chatInput.disabled = true;
-    defaultPromptBtn.disabled = true;
+    setChipButtonsDisabled(true);
     resetChatBtn.disabled = true;
     statusEl.textContent = 'Resetting chat...';
 
@@ -109,7 +116,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusEl.textContent = chrome.runtime.lastError.message;
         chatSubmit.disabled = false;
         chatInput.disabled = false;
-        defaultPromptBtn.disabled = false;
+        setChipButtonsDisabled(false);
         resetChatBtn.disabled = false;
         return;
       }
@@ -118,7 +125,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusEl.textContent = response.error;
         chatSubmit.disabled = false;
         chatInput.disabled = false;
-        defaultPromptBtn.disabled = false;
+        setChipButtonsDisabled(false);
         resetChatBtn.disabled = false;
         return;
       }
@@ -186,6 +193,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       error: state.error || '',
       isEmr: Boolean(state.isEmr),
       defaultPromptLabel: state.defaultPromptLabel || '',
+      defaultPrompt: state.defaultPrompt || '',
+      promptChips: Array.isArray(state.promptChips) ? state.promptChips : [],
       patientLabel: state.patientLabel || state.lastContext?.title || '',
       patientKey: state.patientKey || null,
       activeChatKey: state.activeChatKey || null,
@@ -330,8 +339,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       chatSubmit.disabled = true;
       chatInput.disabled = true;
       chatInput.placeholder = 'Chat unavailable';
-      defaultPromptBtn.disabled = true;
-      defaultPromptBtn.removeAttribute('title');
+      clearPromptChips();
       resetChatBtn.disabled = true;
       return;
     }
@@ -339,7 +347,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     chatSection.classList.remove('hidden');
 
     if (state.status === 'needs_api_key') {
-      chatControls.classList.add('hidden');
+      clearPromptChips();
       chatLog.innerHTML = '';
       chatLog.appendChild(renderChatMessage({
         role: 'assistant',
@@ -347,20 +355,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       }));
       chatInput.disabled = true;
       chatSubmit.disabled = true;
-      defaultPromptBtn.disabled = true;
-      defaultPromptBtn.removeAttribute('title');
       chatInput.placeholder = 'Chat unavailable';
       resetChatBtn.disabled = true;
       return;
-    }
-
-    if (state.defaultPromptLabel && chatState.messages.length === 0) {
-      chatControls.classList.remove('hidden');
-      defaultPromptBtn.textContent = state.defaultPromptLabel;
-      defaultPromptBtn.title = `Send "${state.defaultPromptLabel}"`;
-    } else {
-      chatControls.classList.add('hidden');
-      defaultPromptBtn.removeAttribute('title');
     }
 
     chatInput.placeholder = `Ask about ${label}...`;
@@ -368,7 +365,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const disableInput = chatState.status === 'streaming' || chatState.status === 'disabled';
     chatInput.disabled = disableInput;
     chatSubmit.disabled = disableInput;
-    defaultPromptBtn.disabled = disableInput;
+    renderPromptChips(state, { disable: disableInput });
     const hasChatHistory = chatState.messages.length > 0
       || Boolean(chatState.pendingAssistant)
       || (chatState.status === 'error' && chatState.error);
@@ -406,6 +403,58 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (wasAtBottom) {
         chatLog.scrollTop = chatLog.scrollHeight;
       }
+    });
+  }
+
+  function buildPromptChipList(state) {
+    const chips = Array.isArray(state.promptChips) ? state.promptChips : [];
+    const normalized = chips
+      .filter((chip) => chip && typeof chip === 'object')
+      .map((chip) => ({
+        label: typeof chip.label === 'string' ? chip.label.trim() : '',
+        prompt: typeof chip.prompt === 'string' ? chip.prompt : '',
+      }))
+      .filter((chip) => chip.label && chip.prompt);
+
+    return normalized;
+  }
+
+  function renderPromptChips(state, options = {}) {
+    const { disable = false } = options;
+    const chips = buildPromptChipList(state);
+
+    chatControls.innerHTML = '';
+
+    if (chips.length === 0) {
+      chatControls.classList.add('hidden');
+      return;
+    }
+
+    chatControls.classList.remove('hidden');
+
+    chips.forEach((chip) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chip';
+      button.dataset.promptChip = 'true';
+      if (chip.prompt) {
+        button.dataset.prompt = chip.prompt;
+      }
+      button.textContent = chip.label;
+      button.title = `Insert "${chip.label}"`;
+      button.disabled = Boolean(disable);
+      chatControls.appendChild(button);
+    });
+  }
+
+  function clearPromptChips() {
+    chatControls.innerHTML = '';
+    chatControls.classList.add('hidden');
+  }
+
+  function setChipButtonsDisabled(disabled) {
+    chatControls.querySelectorAll('button[data-prompt-chip]').forEach((button) => {
+      button.disabled = disabled;
     });
   }
 

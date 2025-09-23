@@ -32,6 +32,7 @@ function defaultTabState() {
     patientKey: null,
     patientLabel: '',
     message: '',
+    promptChips: normalizePromptChips(promptChips),
   };
 }
 
@@ -62,6 +63,7 @@ function normalizeTabState(state) {
   }
   normalized.activeChatKey = activeKey;
   normalized.chat = normalizeChatState(activeKey ? sessions[activeKey] : defaultChatState());
+  normalized.promptChips = normalizePromptChips(normalized.promptChips);
   return normalized;
 }
 
@@ -88,6 +90,19 @@ function normalizeChatState(chatState) {
     pendingAssistant: chatState.pendingAssistant || null,
     error: chatState.error || null,
   };
+}
+
+function normalizePromptChips(chips) {
+  if (!Array.isArray(chips)) {
+    return promptChips.map((chip) => ({ ...chip }));
+  }
+  return chips
+    .filter((chip) => chip && typeof chip === 'object')
+    .map((chip) => ({
+      label: typeof chip.label === 'string' ? chip.label : '',
+      prompt: typeof chip.prompt === 'string' ? chip.prompt : '',
+    }))
+    .filter((chip) => chip.label && chip.prompt);
 }
 
 function storageGet(keys) {
@@ -343,11 +358,14 @@ async function handlePageContext(tabId, payload) {
 
   const patientKey = payload.patientKey || `${payload.url}#${payload.title}`;
   const patientLabel = payload.patientLabel || payload.title || 'Current chart';
+  const defaultPromptText = config.prompt || SYSTEM_PROMPT;
+  const defaultPromptLabel = summarizePromptLabel(defaultPromptText);
 
   const updates = {
     isEmr: Boolean(payload.isEmr),
-    defaultPrompt: config.prompt || SYSTEM_PROMPT,
-    defaultPromptLabel: summarizePromptLabel(config.prompt || SYSTEM_PROMPT),
+    defaultPrompt: defaultPromptText,
+    defaultPromptLabel,
+    promptChips: normalizePromptChips(promptChips),
     model: config.model || DEFAULT_MODEL,
     contextSummary: payload.contextSummary,
     lastContext: {
