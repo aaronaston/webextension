@@ -178,8 +178,6 @@ section {
   background: #f8fafc;
   border-radius: 6px;
   padding: 10px;
-  max-height: 220px;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;

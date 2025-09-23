@@ -346,8 +346,8 @@ async function handlePageContext(tabId, payload) {
 
   const updates = {
     isEmr: Boolean(payload.isEmr),
-    defaultPrompt: config.prompt || DEFAULT_PROMPT,
-    defaultPromptLabel: summarizePromptLabel(config.prompt || DEFAULT_PROMPT),
+    defaultPrompt: config.prompt || SYSTEM_PROMPT,
+    defaultPromptLabel: summarizePromptLabel(config.prompt || SYSTEM_PROMPT),
     model: config.model || DEFAULT_MODEL,
     contextSummary: payload.contextSummary,
     lastContext: {
@@ -440,7 +440,7 @@ async function handleChatRequest(tabId, message) {
     throw new Error('OpenAI API key is required for chat.');
   }
 
-  const defaultPromptText = state.defaultPrompt || config.prompt || DEFAULT_PROMPT;
+  const defaultPromptText = state.defaultPrompt || config.prompt || SYSTEM_PROMPT;
   let userMessage = '';
   if (message.useDefaultPrompt) {
     userMessage = defaultPromptText;
@@ -635,7 +635,7 @@ async function loadConfig(url) {
   return {
     apiKey: openAI.apiKey || '',
     model: siteConfig.model || openAI.model || DEFAULT_MODEL,
-    prompt: siteConfig.prompt || openAI.defaultPrompt || DEFAULT_PROMPT,
+    prompt: siteConfig.prompt || openAI.defaultPrompt || SYSTEM_PROMPT,
   };
 }
 

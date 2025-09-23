@@ -1,4 +1,4 @@
-/* global DEFAULT_PROMPT */
+/* global SYSTEM_PROMPT */
 
 function storageGet(keys) {
   return new Promise((resolve, reject) => {
@@ -148,7 +148,7 @@ async function loadSettings() {
     return {
       apiKey: '',
       model: 'gpt-4o-mini',
-      defaultPrompt: DEFAULT_PROMPT,
+      defaultPrompt: SYSTEM_PROMPT,
       sites: {},
     };
   }
@@ -157,14 +157,14 @@ async function loadSettings() {
     return {
       apiKey: openAI.apiKey || '',
       model: openAI.model || 'gpt-4o-mini',
-      defaultPrompt: openAI.defaultPrompt || DEFAULT_PROMPT,
+      defaultPrompt: openAI.defaultPrompt || SYSTEM_PROMPT,
       sites: openAI.sites || {},
     };
   }
   return {
     apiKey: '',
     model: 'gpt-4o-mini',
-    defaultPrompt: DEFAULT_PROMPT,
+    defaultPrompt: SYSTEM_PROMPT,
     sites: {},
   };
 }
